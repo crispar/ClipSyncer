@@ -20,6 +20,7 @@ from src.services import GitHubSyncService, CleanupService
 from src.services.cleanup.cleanup_service import (
     DuplicateRemover, OldDataCleaner, DatabaseOptimizer
 )
+from src.services.auto_sync_service import AutoSyncService
 from src.ui.tray import TrayIcon
 from src.ui.history import HistoryViewer
 from src.utils import ConfigManager
@@ -173,6 +174,7 @@ class ClipboardHistoryApp:
             # Initialize GitHub sync (if enabled)
             # Try to load GitHub settings from dedicated file first
             github_settings = self._load_github_settings()
+            self.auto_sync = None
 
             if github_settings and github_settings.get('enabled'):
                 logger.info("Initializing GitHub sync from github_settings.yaml...")
@@ -182,6 +184,15 @@ class ClipboardHistoryApp:
                 if token and repository:
                     self.github_sync = GitHubSyncService(token, repository)
                     logger.info(f"GitHub sync initialized for repository: {repository}")
+
+                    # Initialize auto sync if configured
+                    auto_sync_enabled = github_settings.get('auto_sync_enabled', True)
+                    auto_sync_interval = github_settings.get('auto_sync_interval_minutes', 30)
+
+                    if auto_sync_enabled:
+                        self.auto_sync = AutoSyncService(auto_sync_interval)
+                        self.auto_sync.set_sync_callback(self._auto_sync_to_github)
+                        logger.info(f"Auto sync configured for every {auto_sync_interval} minutes")
                 else:
                     logger.warning("GitHub sync disabled: missing credentials")
             elif self.config_manager.get('github.enabled'):
@@ -193,6 +204,15 @@ class ClipboardHistoryApp:
                 if token and repository:
                     self.github_sync = GitHubSyncService(token, repository)
                     logger.info(f"GitHub sync initialized for repository: {repository}")
+
+                    # Initialize auto sync with default settings
+                    auto_sync_enabled = self.config_manager.get('github.auto_sync_enabled', True)
+                    auto_sync_interval = self.config_manager.get('github.auto_sync_interval_minutes', 30)
+
+                    if auto_sync_enabled:
+                        self.auto_sync = AutoSyncService(auto_sync_interval)
+                        self.auto_sync.set_sync_callback(self._auto_sync_to_github)
+                        logger.info(f"Auto sync configured for every {auto_sync_interval} minutes")
                 else:
                     logger.warning("GitHub sync disabled: missing credentials")
             else:
@@ -233,6 +253,10 @@ class ClipboardHistoryApp:
                 entries = self.clipboard_history.get_entries(limit=1)
                 if entries:
                     self.repository.save_entry(entries[0])
+
+                # Track change for auto sync
+                if self.auto_sync:
+                    self.auto_sync.increment_changes()
 
                 # Show notification if enabled
                 if self.config_manager.get('ui.show_notifications') and self.signal_bridge:
@@ -312,6 +336,38 @@ class ClipboardHistoryApp:
 
         threading.Thread(target=sync_task, daemon=True).start()
 
+    def _auto_sync_to_github(self):
+        """Auto sync callback - runs in background thread"""
+        if self.github_sync and self.github_sync.enabled:
+            try:
+                # Export current history
+                history_data = {
+                    'entries': [e.to_dict() for e in self.clipboard_history.get_entries()],
+                    'settings': self.config_manager.get_all()
+                }
+
+                # Encrypt before upload
+                encrypted = self.encryption_manager.encrypt_json(history_data)
+
+                # Upload to GitHub with auto-generated filename
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"auto_backup_{timestamp}.json"
+                success = self.github_sync.upload_backup(encrypted, filename)
+
+                if success:
+                    logger.info(f"Auto sync completed: {filename}")
+                    if self.signal_bridge:
+                        self.signal_bridge.show_notification_signal.emit(
+                            "Auto Sync",
+                            "Clipboard history backed up to GitHub"
+                        )
+                else:
+                    logger.error("Auto sync failed")
+
+            except Exception as e:
+                logger.error(f"Auto sync error: {e}")
+
     def _cleanup_now(self):
         """Run cleanup immediately (runs in main thread)"""
         # Run in separate thread to avoid blocking UI
@@ -357,6 +413,10 @@ class ClipboardHistoryApp:
             # Start services
             self.clipboard_monitor.start()
             self.cleanup_service.start()
+
+            # Start auto sync if configured
+            if self.auto_sync:
+                self.auto_sync.start()
 
             # Create system tray with improved callbacks
             self.tray_icon = TrayIcon("ClipboardHistory")
@@ -418,6 +478,10 @@ class ClipboardHistoryApp:
             # Stop cleanup service
             if self.cleanup_service:
                 self.cleanup_service.stop()
+
+            # Stop auto sync
+            if hasattr(self, 'auto_sync') and self.auto_sync:
+                self.auto_sync.stop()
 
             # Stop tray icon
             if self.tray_icon:

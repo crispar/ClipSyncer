@@ -154,7 +154,10 @@ class GitHubSettingsDialog(QDialog):
 
         self.auto_sync_input = LineEdit()
         self.auto_sync_input.setPlaceholderText("e.g., 30")
-        self.auto_sync_input.setText(str(self.current_settings.get('auto_sync_interval', 0)))
+        # Try both old and new key names for backwards compatibility
+        auto_sync_value = self.current_settings.get('auto_sync_interval_minutes',
+                                                    self.current_settings.get('auto_sync_interval', 0))
+        self.auto_sync_input.setText(str(auto_sync_value))
         main_layout.addWidget(self.auto_sync_input)
 
         # Help link
@@ -286,7 +289,8 @@ class GitHubSettingsDialog(QDialog):
             'github': {
                 'repository': repo,
                 'token': token,
-                'auto_sync_interval': auto_sync,
+                'auto_sync_interval_minutes': auto_sync,
+                'auto_sync_enabled': auto_sync > 0,
                 'enabled': True
             }
         }
