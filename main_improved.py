@@ -71,14 +71,15 @@ class ClipboardHistoryApp:
         # Configure loguru
         logger.remove()  # Remove default handler
 
-        # Console logging
-        logger.add(
-            sys.stderr,
-            level="INFO",
-            format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}"
-        )
+        # Console logging - check if stderr is available (not None in exe)
+        if sys.stderr is not None:
+            logger.add(
+                sys.stderr,
+                level="INFO",
+                format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}"
+            )
 
-        # File logging
+        # File logging - always enabled
         logger.add(
             log_dir / "clipboard_history_{time:YYYY-MM-DD}.log",
             rotation="1 day",
