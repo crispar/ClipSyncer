@@ -5,6 +5,7 @@ import os
 import signal
 import threading
 from pathlib import Path
+from datetime import datetime
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer, pyqtSignal, QObject
 from loguru import logger
@@ -16,9 +17,11 @@ from src.core.clipboard import ClipboardMonitor, ClipboardHistory
 from src.core.encryption import EncryptionManager, KeyManager
 from src.core.storage import DatabaseManager, ClipboardRepository
 from src.services import GitHubSyncService, CleanupService
+from src.services.auto_sync_service import AutoSyncService
 from src.services.cleanup.cleanup_service import (
     DuplicateRemover, OldDataCleaner, DatabaseOptimizer
 )
+from src.core.clipboard.history import ClipboardEntry
 from src.ui.tray import TrayIcon
 from src.ui.history import HistoryViewer
 from src.utils import ConfigManager
@@ -47,6 +50,7 @@ class ClipboardHistoryApp:
         self.repository = None
         self.github_sync = None
         self.cleanup_service = None
+        self.auto_sync_service = None
         self.tray_icon = None
         self.history_viewer = None
         self.qt_app = None
@@ -131,6 +135,14 @@ class ClipboardHistoryApp:
 
                 if token and repository:
                     self.github_sync = GitHubSyncService(token, repository)
+
+                    # Initialize auto sync service for real-time sync
+                    if self.github_sync.enabled:
+                        pull_interval = self.config_manager.get('github.pull_interval', 60)
+                        self.auto_sync_service = AutoSyncService(pull_interval_seconds=pull_interval)
+                        self.auto_sync_service.set_push_callback(self._push_to_github)
+                        self.auto_sync_service.set_pull_callback(self._pull_from_github)
+                        logger.info("Real-time sync enabled (push: on-change, pull: every 60s)")
                 else:
                     logger.warning("GitHub sync disabled: missing credentials")
 
@@ -170,6 +182,10 @@ class ClipboardHistoryApp:
                 if entries:
                     self.repository.save_entry(entries[0])
 
+                # Trigger real-time push sync (with debounce)
+                if self.auto_sync_service:
+                    self.auto_sync_service.trigger_push()
+
                 # Show notification if enabled
                 if self.config_manager.get('ui.show_notifications') and self.signal_bridge:
                     self.signal_bridge.show_notification_signal.emit(
@@ -181,6 +197,101 @@ class ClipboardHistoryApp:
 
         except Exception as e:
             logger.error(f"Error handling clipboard change: {e}")
+
+    def _push_to_github(self):
+        """Push current clipboard data to GitHub (called by AutoSyncService)"""
+        if not self.github_sync or not self.github_sync.enabled:
+            return
+
+        try:
+            # Export current history
+            history_data = {
+                'entries': [e.to_dict() for e in self.clipboard_history.get_entries()],
+                'timestamp': datetime.now().isoformat(),
+                'device': os.environ.get('COMPUTERNAME', 'unknown')
+            }
+
+            # Encrypt before upload
+            encrypted = self.encryption_manager.encrypt_json(history_data)
+
+            # Push to GitHub using real-time sync endpoint
+            success = self.github_sync.push_latest(encrypted)
+
+            if success:
+                logger.debug("Push sync completed")
+            else:
+                logger.warning("Push sync failed")
+
+        except Exception as e:
+            logger.error(f"Push sync error: {e}")
+
+    def _pull_from_github(self):
+        """Pull new clipboard entries from GitHub (called by AutoSyncService)"""
+        if not self.github_sync or not self.github_sync.enabled:
+            return
+
+        try:
+            # Get local hashes for comparison
+            local_hashes = {e.content_hash for e in self.clipboard_history.get_entries()}
+
+            # Get new entries from GitHub
+            encrypted_data = self.github_sync.pull_latest()
+
+            if not encrypted_data:
+                return  # No updates or error
+
+            # Decrypt data
+            decrypted = self.encryption_manager.decrypt_json(encrypted_data)
+
+            if not decrypted:
+                return
+
+            # Process new entries
+            remote_entries = decrypted.get('entries', [])
+            new_count = 0
+
+            for entry_data in remote_entries:
+                content_hash = entry_data.get('content_hash')
+
+                # Skip if already exists locally
+                if content_hash and content_hash in local_hashes:
+                    continue
+
+                # Create entry and add to history
+                try:
+                    entry = ClipboardEntry(
+                        content=entry_data['content'],
+                        timestamp=datetime.fromisoformat(entry_data['timestamp']),
+                        content_hash=content_hash,
+                        category=entry_data.get('category', 'text'),
+                        metadata=entry_data.get('metadata', {})
+                    )
+
+                    # Add to memory history (will handle dedup)
+                    self.clipboard_history._entries.append(entry)
+                    self.clipboard_history._hash_index[content_hash] = entry
+
+                    # Save to database
+                    self.repository.save_entry(entry)
+
+                    local_hashes.add(content_hash)
+                    new_count += 1
+
+                except Exception as e:
+                    logger.error(f"Failed to import entry: {e}")
+
+            if new_count > 0:
+                logger.info(f"Pulled {new_count} new entries from GitHub")
+
+                # Show notification
+                if self.signal_bridge and self.config_manager.get('ui.show_notifications'):
+                    self.signal_bridge.show_notification_signal.emit(
+                        "GitHub Sync",
+                        f"Received {new_count} new entries"
+                    )
+
+        except Exception as e:
+            logger.error(f"Pull sync error: {e}")
 
     def _show_history(self):
         """Show history viewer window (runs in main thread)"""
@@ -292,6 +403,10 @@ class ClipboardHistoryApp:
             self.clipboard_monitor.start()
             self.cleanup_service.start()
 
+            # Start auto sync service (real-time GitHub sync)
+            if self.auto_sync_service:
+                self.auto_sync_service.start()
+
             # Create system tray with improved callbacks
             self.tray_icon = TrayIcon("ClipboardHistory")
 
@@ -352,6 +467,10 @@ class ClipboardHistoryApp:
             # Stop cleanup service
             if self.cleanup_service:
                 self.cleanup_service.stop()
+
+            # Stop auto sync service
+            if self.auto_sync_service:
+                self.auto_sync_service.stop()
 
             # Stop tray icon
             if self.tray_icon:

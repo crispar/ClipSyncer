@@ -681,27 +681,47 @@ class ModernHistoryViewer(QMainWindow):
         # Reinitialize GitHub sync service if main app reference exists
         if hasattr(self, 'main_app') and self.main_app:
             try:
+                # Reinitialize encryption manager with updated key
+                from src.core.encryption import KeyManager, EncryptionManager
+                key_manager = KeyManager()
+                encryption_key = key_manager.get_or_create_key()
+                self.main_app.encryption_manager = EncryptionManager(encryption_key)
+                logger.info("Encryption manager reinitialized with updated key")
+
                 # Update GitHub sync service with new settings
                 from src.services.sync.github_sync import GitHubSyncService
 
-                if self.main_app.github_sync:
-                    # Reinitialize with new settings
-                    self.main_app.github_sync = GitHubSyncService(
-                        token=settings.get('token'),
-                        repository=settings.get('repository')
-                    )
-                    logger.info("GitHub sync service reinitialized")
+                self.main_app.github_sync = GitHubSyncService(
+                    token=settings.get('token'),
+                    repository=settings.get('repository')
+                )
+                logger.info("GitHub sync service reinitialized")
 
-                    # Show success notification
-                    InfoBar.success(
-                        title="GitHub Sync",
-                        content="GitHub sync service has been updated with new settings",
-                        orient=Qt.Orientation.Horizontal,
-                        isClosable=True,
-                        position=InfoBarPosition.TOP,
-                        duration=3000,
-                        parent=self
-                    )
+                # Reinitialize auto sync service if GitHub sync is enabled
+                if self.main_app.github_sync.enabled:
+                    from src.services.auto_sync_service import AutoSyncService
+                    pull_interval = 60  # Default 60 seconds
+
+                    # Stop existing auto sync service if any
+                    if self.main_app.auto_sync_service:
+                        self.main_app.auto_sync_service.stop()
+
+                    self.main_app.auto_sync_service = AutoSyncService(pull_interval_seconds=pull_interval)
+                    self.main_app.auto_sync_service.set_push_callback(self.main_app._push_to_github)
+                    self.main_app.auto_sync_service.set_pull_callback(self.main_app._pull_from_github)
+                    self.main_app.auto_sync_service.start()
+                    logger.info("Auto sync service reinitialized")
+
+                # Show success notification
+                InfoBar.success(
+                    title="GitHub Sync",
+                    content="GitHub sync service has been updated with new settings",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self
+                )
             except Exception as e:
                 logger.error(f"Failed to reinitialize GitHub sync: {e}")
 

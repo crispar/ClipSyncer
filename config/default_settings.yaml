@@ -18,8 +18,11 @@ github:
   enabled: false
   repository: ""
   token: ""
-  sync_interval: 3600  # seconds (1 hour)
+  sync_interval: 3600  # seconds (1 hour) - legacy, now using real-time sync
   auto_sync: false
+  pull_interval: 60  # seconds - how often to check for new entries from other devices
+  push_debounce: 5  # seconds - wait after clipboard change before pushing
+  min_push_interval: 30  # seconds - minimum time between pushes
 
 cleanup:
   enabled: true

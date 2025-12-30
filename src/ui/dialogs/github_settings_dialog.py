@@ -36,7 +36,7 @@ class GitHubSettingsDialog(QDialog):
 
         # Set window properties
         self.setFixedWidth(500)
-        self.setFixedHeight(450)
+        self.setFixedHeight(550)
 
     def _apply_theme_style(self):
         """Apply appropriate styling based on system theme"""
@@ -147,6 +147,27 @@ class GitHubSettingsDialog(QDialog):
             self.token_input.setText(self.current_settings['token'])
 
         main_layout.addWidget(self.token_input)
+
+        # Sync Password field (for multi-device encryption)
+        sync_password_label = BodyLabel("Sync Password (for multi-device encryption):")
+        main_layout.addWidget(sync_password_label)
+
+        self.sync_password_input = PasswordLineEdit()
+        self.sync_password_input.setPlaceholderText("Enter same password on all devices")
+
+        # Check if sync password exists
+        from src.core.encryption import KeyManager
+        self._key_manager = KeyManager()
+        if self._key_manager.has_sync_password():
+            self.sync_password_input.setPlaceholderText("Password already set (leave empty to keep)")
+
+        main_layout.addWidget(self.sync_password_input)
+
+        sync_password_hint = CaptionLabel(
+            "Use the same password on all PCs to share encrypted clipboard data."
+        )
+        sync_password_hint.setWordWrap(True)
+        main_layout.addWidget(sync_password_hint)
 
         # Auto-sync option
         self.auto_sync_label = BodyLabel("Auto-sync interval (minutes, 0 to disable):")
@@ -266,6 +287,7 @@ class GitHubSettingsDialog(QDialog):
         """Save GitHub settings"""
         repo = self.repo_input.text().strip()
         token = self.token_input.text().strip()
+        sync_password = self.sync_password_input.text()
 
         try:
             auto_sync = int(self.auto_sync_input.text().strip() or "0")
@@ -283,6 +305,37 @@ class GitHubSettingsDialog(QDialog):
                 parent=self
             )
             return
+
+        # Check sync password requirement
+        if not self._key_manager.has_sync_password() and not sync_password:
+            InfoBar.warning(
+                title="Sync Password Required",
+                content="Please enter a sync password for multi-device encryption",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+            return
+
+        # Set sync password if provided
+        if sync_password:
+            try:
+                self._key_manager.set_sync_password(sync_password)
+                logger.info("Sync password updated")
+            except Exception as e:
+                logger.error(f"Failed to set sync password: {e}")
+                InfoBar.error(
+                    title="Password Error",
+                    content=f"Failed to set sync password: {str(e)}",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=5000,
+                    parent=self
+                )
+                return
 
         # Save settings
         settings = {

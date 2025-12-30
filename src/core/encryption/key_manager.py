@@ -2,9 +2,17 @@
 
 import base64
 import os
+import hashlib
 from typing import Optional
 import keyring
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
 from loguru import logger
+
+
+# Fixed salt for password-based key derivation (same across all devices)
+# This is public and doesn't need to be secret - the password provides security
+SYNC_SALT = b"ClipSyncer_v1_salt_2024"
 
 
 class KeyManager:
@@ -12,6 +20,7 @@ class KeyManager:
 
     SERVICE_NAME = "ClipboardHistory"
     KEY_NAME = "encryption_key"
+    SYNC_PASSWORD_KEY = "sync_password_hash"  # Store hash to verify password
 
     def __init__(self):
         """Initialize key manager"""
@@ -123,6 +132,144 @@ class KeyManager:
             32-byte random key
         """
         return os.urandom(32)
+
+    @staticmethod
+    def derive_key_from_password(password: str) -> bytes:
+        """
+        Derive a 256-bit encryption key from a password using PBKDF2.
+        Uses a fixed salt so the same password produces the same key on all devices.
+
+        Args:
+            password: User-provided sync password
+
+        Returns:
+            32-byte derived key
+        """
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=SYNC_SALT,
+            iterations=600000,  # High iteration count for security
+        )
+        return kdf.derive(password.encode('utf-8'))
+
+    def set_sync_password(self, password: str) -> bytes:
+        """
+        Set a sync password and derive encryption key from it.
+        Stores the derived key and a password hash for verification.
+
+        Args:
+            password: User-provided sync password
+
+        Returns:
+            32-byte derived encryption key
+        """
+        # Derive key from password
+        key = self.derive_key_from_password(password)
+
+        # Store the key
+        self.store_key(key)
+
+        # Store password hash for verification (using different salt)
+        password_hash = hashlib.pbkdf2_hmac(
+            'sha256',
+            password.encode('utf-8'),
+            b"ClipSyncer_password_verify",
+            100000
+        )
+        password_hash_b64 = base64.b64encode(password_hash).decode('ascii')
+        keyring.set_password(self.SERVICE_NAME, self.SYNC_PASSWORD_KEY, password_hash_b64)
+
+        logger.info("Sync password set and key derived successfully")
+        return key
+
+    def verify_sync_password(self, password: str) -> bool:
+        """
+        Verify if a password matches the stored sync password.
+
+        Args:
+            password: Password to verify
+
+        Returns:
+            True if password matches
+        """
+        try:
+            stored_hash_b64 = keyring.get_password(self.SERVICE_NAME, self.SYNC_PASSWORD_KEY)
+            if not stored_hash_b64:
+                return False
+
+            stored_hash = base64.b64decode(stored_hash_b64)
+
+            # Calculate hash of provided password
+            password_hash = hashlib.pbkdf2_hmac(
+                'sha256',
+                password.encode('utf-8'),
+                b"ClipSyncer_password_verify",
+                100000
+            )
+
+            return password_hash == stored_hash
+
+        except Exception as e:
+            logger.error(f"Password verification failed: {e}")
+            return False
+
+    def has_sync_password(self) -> bool:
+        """
+        Check if a sync password has been set.
+
+        Returns:
+            True if sync password exists
+        """
+        try:
+            stored_hash = keyring.get_password(self.SERVICE_NAME, self.SYNC_PASSWORD_KEY)
+            return stored_hash is not None
+        except Exception:
+            return False
+
+    def clear_sync_password(self) -> bool:
+        """
+        Clear the stored sync password hash.
+
+        Returns:
+            True if successful
+        """
+        try:
+            keyring.delete_password(self.SERVICE_NAME, self.SYNC_PASSWORD_KEY)
+            logger.info("Sync password cleared")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear sync password: {e}")
+            return False
+
+    def get_key_with_password(self, password: str) -> Optional[bytes]:
+        """
+        Get encryption key using sync password.
+        If password matches stored hash, returns the stored key.
+        If no password was set before, sets it and derives new key.
+
+        Args:
+            password: Sync password
+
+        Returns:
+            32-byte encryption key or None if password is wrong
+        """
+        if self.has_sync_password():
+            # Verify password matches
+            if self.verify_sync_password(password):
+                key = self.get_key()
+                if key:
+                    logger.info("Retrieved key with verified password")
+                    return key
+                else:
+                    # Key missing but password correct - regenerate
+                    return self.set_sync_password(password)
+            else:
+                logger.warning("Sync password verification failed")
+                return None
+        else:
+            # First time setting password
+            return self.set_sync_password(password)
 
     def verify_access(self) -> bool:
         """
