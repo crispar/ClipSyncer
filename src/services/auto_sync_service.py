@@ -46,11 +46,6 @@ class AutoSyncService:
         """Set the callback function for pulling (download from GitHub)"""
         self._pull_callback = callback
 
-    # Legacy support
-    def set_sync_callback(self, callback: Callable):
-        """Legacy: Set the callback function for syncing (same as push)"""
-        self.set_push_callback(callback)
-
     def trigger_push(self):
         """
         Trigger a push sync with debouncing.
@@ -75,11 +70,6 @@ class AutoSyncService:
             )
             self._debounce_timer.daemon = True
             self._debounce_timer.start()
-
-    # Legacy support
-    def increment_changes(self):
-        """Legacy: Track that a change occurred (now triggers immediate push with debounce)"""
-        self.trigger_push()
 
     def _execute_push(self):
         """Execute push sync if conditions are met"""
@@ -219,17 +209,6 @@ class AutoSyncService:
             if self._pull_timer:
                 self._pull_timer.cancel()
             self._schedule_next_pull()
-
-    # Legacy property support
-    @property
-    def sync_interval_minutes(self) -> int:
-        """Legacy: Get sync interval in minutes"""
-        return self.pull_interval // 60
-
-    @sync_interval_minutes.setter
-    def sync_interval_minutes(self, value: int):
-        """Legacy: Set sync interval in minutes"""
-        self.pull_interval = value * 60
 
     @property
     def pending_changes(self) -> int:

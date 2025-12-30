@@ -267,15 +267,12 @@ class ClipboardHistoryApp:
                         metadata=entry_data.get('metadata', {})
                     )
 
-                    # Add to memory history (will handle dedup)
-                    self.clipboard_history._entries.append(entry)
-                    self.clipboard_history._hash_index[content_hash] = entry
-
-                    # Save to database
-                    self.repository.save_entry(entry)
-
-                    local_hashes.add(content_hash)
-                    new_count += 1
+                    # Import to memory history using proper method
+                    if self.clipboard_history.import_entry(entry):
+                        # Save to database
+                        self.repository.save_entry(entry)
+                        local_hashes.add(content_hash)
+                        new_count += 1
 
                 except Exception as e:
                     logger.error(f"Failed to import entry: {e}")

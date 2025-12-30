@@ -10,6 +10,7 @@ watchdog==4.0.0           # File system monitoring
 PyQt6==6.7.1              # Modern GUI framework
 PyQt6-Qt6==6.7.2          # Qt6 bindings
 PyQt6-sip>=13.0.0         # SIP bindings for PyQt6
+pyqt6-fluent-widgets>=1.7.5  # Fluent Design widgets for PyQt6
 
 # Database
 sqlalchemy==2.0.31        # ORM for data persistence

@@ -214,6 +214,49 @@ class ClipboardHistory:
         for entry in self._entries:
             self._hash_index[entry.content_hash] = entry
 
+    def import_entry(self, entry: ClipboardEntry) -> bool:
+        """
+        Import an external entry (e.g., from remote sync).
+        Skips duplicates and maintains proper encapsulation.
+
+        Args:
+            entry: ClipboardEntry to import
+
+        Returns:
+            True if entry was imported, False if duplicate exists
+        """
+        if not entry or not entry.content_hash:
+            return False
+
+        # Check for duplicate
+        if entry.content_hash in self._hash_index:
+            logger.debug(f"Skipped duplicate import: {entry.content_hash[:8]}")
+            return False
+
+        # Add to history
+        self._entries.append(entry)
+        self._hash_index[entry.content_hash] = entry
+
+        # Enforce max size
+        while len(self._entries) > self.max_size:
+            removed = self._entries.pop(0)  # Remove oldest (at start after append)
+            del self._hash_index[removed.content_hash]
+
+        logger.debug(f"Imported entry: {entry.content_hash[:8]}")
+        return True
+
+    def has_entry(self, content_hash: str) -> bool:
+        """
+        Check if an entry with the given hash exists.
+
+        Args:
+            content_hash: Hash to check
+
+        Returns:
+            True if entry exists
+        """
+        return content_hash in self._hash_index
+
     def _detect_category(self, content: str) -> str:
         """
         Detect content category
