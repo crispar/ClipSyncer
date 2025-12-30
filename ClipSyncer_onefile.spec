@@ -140,6 +140,8 @@ hiddenimports = [
     'src.core.sync',
     'src.core.sync.github_sync',
     'src.ui',
+    'src.ui.dialogs',
+    'src.ui.dialogs.github_settings_dialog',
     'src.ui.history',
     'src.ui.history.history_viewer_modern',
     'src.ui.tray',
@@ -191,7 +193,7 @@ exe = EXE(
     upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,  # Enable console to see errors
+    console=False,  # Console hidden, check logs/ folder for debugging
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

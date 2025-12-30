@@ -293,7 +293,7 @@ class ModernHistoryViewer(QMainWindow):
     def _check_for_updates(self):
         """Check for new clipboard entries and refresh if needed"""
         try:
-            # Get current entry count
+            # Get current entry count from the actual source
             if self.repository:
                 current_count = self.repository.get_entry_count()
             elif self.clipboard_history:
@@ -305,19 +305,29 @@ class ModernHistoryViewer(QMainWindow):
             if current_count != self.last_entry_count:
                 # Remember current selection
                 current_row = self.history_list.currentRow()
+                current_item_content = None
 
-                # Reload entries
+                if current_row >= 0 and current_row < len(self.current_entries):
+                    current_item_content = self.current_entries[current_row].content
+
+                # Reload entries - this will update self.last_entry_count
                 self._load_entries()
-                self.last_entry_count = current_count
 
-                # Restore selection if possible
-                if 0 <= current_row < self.history_list.count():
-                    self.history_list.setCurrentRow(current_row)
+                # Try to restore selection based on content
+                if current_item_content:
+                    for i, entry in enumerate(self.current_entries):
+                        if entry.content == current_item_content:
+                            self.history_list.setCurrentRow(i)
+                            break
+                    else:
+                        # If not found, select the first item
+                        if self.history_list.count() > 0:
+                            self.history_list.setCurrentRow(0)
                 elif self.history_list.count() > 0:
                     # Select the first (newest) item
                     self.history_list.setCurrentRow(0)
 
-                # Show notification for new entry
+                # Show notification only for new entries (not deletions)
                 if current_count > self.last_entry_count:
                     InfoBar.success(
                         title="New Entry",
@@ -489,36 +499,72 @@ class ModernHistoryViewer(QMainWindow):
 
     def _clear_history(self):
         """Clear all history with confirmation dialog"""
-        # Show modern confirmation dialog
-        w = MessageBox(
-            title="Clear History",
-            content="Are you sure you want to clear all clipboard history?\nThis action cannot be undone.",
-            parent=self
-        )
-        w.yesButton.setText("Clear")
-        w.cancelButton.setText("Cancel")
+        try:
+            # Show modern confirmation dialog
+            w = MessageBox(
+                title="Clear History",
+                content="Are you sure you want to clear all clipboard history?\nThis action cannot be undone.",
+                parent=self
+            )
+            w.yesButton.setText("Clear")
+            w.cancelButton.setText("Cancel")
 
-        if w.exec():
-            if self.clipboard_history:
-                self.clipboard_history.clear()
+            if w.exec():
+                try:
+                    # Clear from database if available
+                    if self.repository:
+                        success = self.repository.clear_all()
+                        if not success:
+                            logger.warning("Failed to clear database")
 
-            self.history_list.clear()
-            self.preview_text.clear()
-            self.metadata_label.clear()
-            self.count_label.setText("0 items")
+                    # Clear from memory - check if attribute exists
+                    if hasattr(self, 'clipboard_history') and self.clipboard_history:
+                        self.clipboard_history.clear()
 
-            # Show notification
-            InfoBar.success(
-                title="Cleared",
-                content="History has been cleared",
+                    # Clear UI
+                    self.history_list.clear()
+                    self.preview_text.clear()
+                    self.metadata_label.clear()
+                    self.current_entries = []
+                    self.last_entry_count = 0
+                    self.count_label.setText("0 items")
+
+                    # Show notification
+                    InfoBar.success(
+                        title="Cleared",
+                        content="History has been cleared",
+                        orient=Qt.Orientation.Horizontal,
+                        isClosable=True,
+                        position=InfoBarPosition.TOP,
+                        duration=2000,
+                        parent=self
+                    )
+
+                    logger.info("Clipboard history cleared successfully")
+
+                except Exception as e:
+                    logger.error(f"Error during clear operation: {e}")
+                    InfoBar.error(
+                        title="Clear Failed",
+                        content=f"Failed to clear history: {str(e)}",
+                        orient=Qt.Orientation.Horizontal,
+                        isClosable=True,
+                        position=InfoBarPosition.TOP,
+                        duration=5000,
+                        parent=self
+                    )
+
+        except Exception as e:
+            logger.error(f"Error showing clear dialog: {e}")
+            InfoBar.error(
+                title="Error",
+                content="Failed to show clear dialog",
                 orient=Qt.Orientation.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP,
-                duration=2000,
+                duration=5000,
                 parent=self
             )
-
-            logger.info("Clipboard history cleared")
 
     def _export_history(self):
         """Export history to file"""
@@ -592,15 +638,72 @@ class ModernHistoryViewer(QMainWindow):
 
     def _show_settings(self):
         """Show settings dialog"""
-        # Show modern info dialog
-        w = Dialog(
-            title="Settings",
-            content="Settings can be edited in:\n%APPDATA%\\ClipboardHistory\\settings.yaml\n\nA settings UI will be added in a future update.",
-            parent=self
-        )
-        w.yesButton.setText("OK")
-        w.cancelButton.hide()
-        w.exec()
+        try:
+            from src.ui.dialogs import GitHubSettingsDialog
+
+            dialog = GitHubSettingsDialog(self)
+
+            # Connect signal to handle saved settings
+            dialog.settings_saved.connect(self._on_github_settings_saved)
+
+            dialog.exec()
+
+        except ImportError as e:
+            logger.error(f"Failed to import GitHubSettingsDialog: {e}")
+            # Fallback to simple dialog
+            from qfluentwidgets import Dialog
+
+            w = Dialog(
+                title="Settings",
+                content="GitHub sync settings can be edited in:\n%APPDATA%\\ClipboardHistory\\github_settings.yaml\n\nSettings UI temporarily unavailable.",
+                parent=self
+            )
+            w.yesButton.setText("OK")
+            w.cancelButton.hide()
+            w.exec()
+
+        except Exception as e:
+            logger.error(f"Failed to show settings dialog: {e}")
+            InfoBar.error(
+                title="Error",
+                content=f"Failed to open settings: {str(e)}",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self
+            )
+
+    def _on_github_settings_saved(self, settings):
+        """Handle GitHub settings being saved"""
+        logger.info("GitHub settings saved, reinitializing sync service...")
+
+        # Reinitialize GitHub sync service if main app reference exists
+        if hasattr(self, 'main_app') and self.main_app:
+            try:
+                # Update GitHub sync service with new settings
+                from src.services.sync.github_sync import GitHubSyncService
+
+                if self.main_app.github_sync:
+                    # Reinitialize with new settings
+                    self.main_app.github_sync = GitHubSyncService(
+                        token=settings.get('token'),
+                        repository=settings.get('repository')
+                    )
+                    logger.info("GitHub sync service reinitialized")
+
+                    # Show success notification
+                    InfoBar.success(
+                        title="GitHub Sync",
+                        content="GitHub sync service has been updated with new settings",
+                        orient=Qt.Orientation.Horizontal,
+                        isClosable=True,
+                        position=InfoBarPosition.TOP,
+                        duration=3000,
+                        parent=self
+                    )
+            except Exception as e:
+                logger.error(f"Failed to reinitialize GitHub sync: {e}")
 
     def closeEvent(self, event):
         """Handle window close event"""

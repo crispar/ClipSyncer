@@ -4,6 +4,7 @@ import sys
 import os
 import signal
 import threading
+import yaml
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer, pyqtSignal, QObject
@@ -62,10 +63,35 @@ class ClipboardHistoryApp:
         logger.info("ClipboardHistory Application Starting")
         logger.info("=" * 60)
 
+    def _load_github_settings(self):
+        """Load GitHub settings from dedicated file"""
+        try:
+            config_path = os.path.join(
+                os.environ.get('APPDATA', '.'),
+                'ClipboardHistory',
+                'github_settings.yaml'
+            )
+
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    settings = yaml.safe_load(f) or {}
+                    return settings.get('github', {})
+        except Exception as e:
+            logger.error(f"Failed to load GitHub settings: {e}")
+
+        return {}
+
     def _setup_logging(self):
         """Configure logging"""
-        # Create logs directory
-        log_dir = Path(os.environ.get('APPDATA', '.')) / 'ClipboardHistory' / 'logs'
+        # Determine log directory based on execution context
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable - use exe directory
+            exe_dir = Path(sys.executable).parent
+            log_dir = exe_dir / 'logs'
+        else:
+            # Running as script - use AppData directory
+            log_dir = Path(os.environ.get('APPDATA', '.')) / 'ClipboardHistory' / 'logs'
+
         log_dir.mkdir(parents=True, exist_ok=True)
 
         # Configure loguru
@@ -80,13 +106,33 @@ class ClipboardHistoryApp:
             )
 
         # File logging - always enabled
+        log_file = log_dir / "ClipSyncer_{time:YYYY-MM-DD}.log"
         logger.add(
-            log_dir / "clipboard_history_{time:YYYY-MM-DD}.log",
+            log_file,
             rotation="1 day",
             retention="7 days",
             level="DEBUG",
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}"
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+            encoding="utf-8"
         )
+
+        # Also create a latest.log that always contains the most recent session
+        latest_log = log_dir / "ClipSyncer_latest.log"
+        logger.add(
+            latest_log,
+            rotation="10 MB",  # Rotate when file reaches 10MB
+            retention=1,  # Keep only 1 backup file (integer, not string)
+            level="DEBUG",
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+            encoding="utf-8",
+            mode="w"  # Overwrite on each start
+        )
+
+        logger.info(f"=== ClipSyncer Started ===")
+        logger.info(f"Executable: {sys.executable}")
+        logger.info(f"Log directory: {log_dir}")
+        logger.info(f"Python version: {sys.version}")
+        logger.info(f"Frozen: {getattr(sys, 'frozen', False)}")
 
     def initialize(self):
         """Initialize all components"""
@@ -125,15 +171,32 @@ class ClipboardHistoryApp:
             self.clipboard_monitor.add_callback(self._on_clipboard_change)
 
             # Initialize GitHub sync (if enabled)
-            if self.config_manager.get('github.enabled'):
-                logger.info("Initializing GitHub sync...")
+            # Try to load GitHub settings from dedicated file first
+            github_settings = self._load_github_settings()
+
+            if github_settings and github_settings.get('enabled'):
+                logger.info("Initializing GitHub sync from github_settings.yaml...")
+                token = github_settings.get('token')
+                repository = github_settings.get('repository')
+
+                if token and repository:
+                    self.github_sync = GitHubSyncService(token, repository)
+                    logger.info(f"GitHub sync initialized for repository: {repository}")
+                else:
+                    logger.warning("GitHub sync disabled: missing credentials")
+            elif self.config_manager.get('github.enabled'):
+                # Fallback to main config
+                logger.info("Initializing GitHub sync from main config...")
                 token = self.config_manager.get('github.token')
                 repository = self.config_manager.get('github.repository')
 
                 if token and repository:
                     self.github_sync = GitHubSyncService(token, repository)
+                    logger.info(f"GitHub sync initialized for repository: {repository}")
                 else:
                     logger.warning("GitHub sync disabled: missing credentials")
+            else:
+                logger.info("GitHub sync not configured")
 
             # Initialize cleanup service
             logger.info("Initializing cleanup service...")

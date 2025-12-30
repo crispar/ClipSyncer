@@ -325,3 +325,36 @@ class ClipboardRepository:
         except Exception as e:
             logger.error(f"Failed to get all settings: {e}")
             return {}
+
+    def get_entry_count(self) -> int:
+        """
+        Get total number of entries in the database
+
+        Returns:
+            Number of entries
+        """
+        try:
+            with self.get_session() as session:
+                return session.query(ClipboardEntryDB).count()
+        except Exception as e:
+            logger.error(f"Failed to get entry count: {e}")
+            return 0
+
+    def clear_all(self) -> bool:
+        """
+        Clear all clipboard entries from database
+
+        Returns:
+            True if successful
+        """
+        try:
+            with self.get_session() as session:
+                # Delete all clipboard entries
+                session.query(ClipboardEntryDB).delete()
+                session.commit()
+                logger.info("Cleared all clipboard entries from database")
+                return True
+
+        except Exception as e:
+            logger.error(f"Failed to clear clipboard entries: {e}")
+            return False

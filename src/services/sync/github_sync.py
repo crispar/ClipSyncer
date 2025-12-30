@@ -76,24 +76,41 @@ class GitHubSyncService:
             logger.info(f"Found existing repository: {self.repository_name}")
             return repo
 
-        except GithubException:
+        except GithubException as e:
+            logger.debug(f"Repository not found with full name, trying to create: {e}")
             # Repository doesn't exist, try to create it
             try:
                 user = self.github.get_user()
                 repo_name = self.repository_name.split('/')[-1]
 
-                repo = user.create_repo(
-                    name=repo_name,
-                    private=True,
-                    description="Encrypted ClipboardHistory backup",
-                    auto_init=True
-                )
-
-                logger.info(f"Created new repository: {repo_name}")
-                return repo
+                # Check if repo exists under user account
+                try:
+                    repo = self.github.get_repo(f"{user.login}/{repo_name}")
+                    logger.info(f"Found existing repository: {user.login}/{repo_name}")
+                    return repo
+                except GithubException:
+                    # Really doesn't exist, create it
+                    repo = user.create_repo(
+                        name=repo_name,
+                        private=True,
+                        description="Encrypted ClipboardHistory backup",
+                        auto_init=True
+                    )
+                    logger.info(f"Created new repository: {repo_name}")
+                    return repo
 
             except GithubException as e:
                 logger.error(f"Failed to create repository: {e}")
+                # If creation failed due to already exists, try to get it one more time
+                if "already exists" in str(e).lower():
+                    try:
+                        user = self.github.get_user()
+                        repo_name = self.repository_name.split('/')[-1]
+                        repo = self.github.get_repo(f"{user.login}/{repo_name}")
+                        logger.info(f"Found existing repository after creation failed: {user.login}/{repo_name}")
+                        return repo
+                    except:
+                        pass
                 return None
 
     def upload_backup(self, data: Dict[str, Any], filename: Optional[str] = None) -> bool:
