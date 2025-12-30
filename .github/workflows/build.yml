@@ -1,0 +1,77 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ master, main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+        pip install PyQt6-Fluent-Widgets
+
+    - name: Create icon directory if not exists
+      run: |
+        if (!(Test-Path "assets")) { New-Item -ItemType Directory -Path "assets" }
+
+    - name: Build executable with PyInstaller using spec file
+      run: |
+        pyinstaller ClipSyncer.spec --clean
+
+    - name: Test executable exists
+      run: |
+        if (Test-Path "dist\ClipSyncer.exe") {
+          echo "Build successful - ClipSyncer.exe created"
+          dir dist
+        } else {
+          echo "Build failed - ClipSyncer.exe not found"
+          exit 1
+        }
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ClipSyncer-Windows
+        path: dist/ClipSyncer.exe
+
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/ClipSyncer.exe
+        name: ClipSyncer ${{ github.ref_name }}
+        body: |
+          ## ClipSyncer Release ${{ github.ref_name }}
+
+          ### Features
+          - 🎨 Modern Windows 11 Fluent Design UI
+          - 📋 Real-time clipboard monitoring
+          - 🔒 Encrypted storage (AES-256-GCM)
+          - 🔍 Smart content categorization
+          - 🌐 Optional GitHub sync
+          - 🧹 Automatic cleanup and optimization
+
+          ### Download
+          Download `ClipSyncer.exe` and run it directly. No installation required.
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
