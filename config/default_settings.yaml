@@ -1,0 +1,39 @@
+# Default application settings
+
+clipboard:
+  check_interval: 500  # milliseconds
+  max_history_size: 1000
+  auto_start: true
+
+encryption:
+  enabled: true
+  algorithm: AES-256-GCM
+
+storage:
+  retention_days: 30
+  backup_interval: 86400  # seconds (24 hours)
+  database_path: null  # null means use default app data directory
+
+github:
+  enabled: false
+  repository: ""
+  token: ""
+  sync_interval: 3600  # seconds (1 hour)
+  auto_sync: false
+
+cleanup:
+  enabled: true
+  duplicate_removal: true
+  cleanup_interval: 3600  # seconds (1 hour)
+
+ui:
+  show_notifications: true
+  minimize_to_tray: true
+  start_minimized: false
+  theme: light  # light or dark
+
+logging:
+  level: INFO
+  file_logging: true
+  max_log_size: 10485760  # 10MB
+  max_log_files: 5

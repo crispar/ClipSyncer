@@ -1,0 +1,35 @@
+# Core dependencies
+pyperclip==1.9.0           # Clipboard monitoring
+pystray==0.19.5            # System tray icon
+Pillow>=10.0.0             # Icon support for tray
+cryptography==42.0.5       # Encryption for data
+PyGithub==2.3.0           # GitHub integration
+watchdog==4.0.0           # File system monitoring
+
+# GUI dependencies
+PyQt6==6.7.1              # Modern GUI framework
+PyQt6-Qt6==6.7.2          # Qt6 bindings
+PyQt6-sip>=13.0.0         # SIP bindings for PyQt6
+
+# Database
+sqlalchemy==2.0.31        # ORM for data persistence
+alembic==1.13.2           # Database migrations
+
+# Configuration
+pyyaml==6.0.1             # Configuration files
+python-dotenv==1.0.1      # Environment variables
+
+# Utilities
+apscheduler==3.10.4       # Background task scheduling
+loguru==0.7.2             # Advanced logging
+keyring==25.2.1           # Secure credential storage
+
+# Development
+pytest==8.3.2             # Testing framework
+pytest-cov==5.0.0         # Coverage reports
+black==24.4.2             # Code formatting
+flake8==7.1.0             # Linting
+mypy==1.11.1              # Type checking
+
+# Build tools
+pyinstaller==6.15.0       # Create executable
