@@ -3,49 +3,62 @@
 import sys
 import os
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all, collect_submodules, collect_data_files
 
 block_cipher = None
 
-# Collect all qfluentwidgets resources
+# Get the site-packages directory from venv
+import site
+site_packages = site.getsitepackages()[0]
+
+# Explicitly add qfluentwidgets and pyqt6_frameless_window paths
 datas = []
-binaries = []
 hiddenimports = []
 
-# Collect qfluentwidgets completely
-try:
-    qfw_datas, qfw_binaries, qfw_hiddenimports = collect_all('qfluentwidgets')
-    datas += qfw_datas
-    binaries += qfw_binaries
-    hiddenimports += qfw_hiddenimports
-except:
-    pass
+# Manually add qfluentwidgets package
+qfluentwidgets_path = os.path.join(site_packages, 'qfluentwidgets')
+if os.path.exists(qfluentwidgets_path):
+    datas.append((qfluentwidgets_path, 'qfluentwidgets'))
 
-# Also explicitly collect qfluentwidgets submodules
-hiddenimports += collect_submodules('qfluentwidgets')
-
-# Collect PyQt6 completely
-try:
-    pyqt6_datas, pyqt6_binaries, pyqt6_hiddenimports = collect_all('PyQt6')
-    datas += pyqt6_datas
-    binaries += pyqt6_binaries
-    hiddenimports += pyqt6_hiddenimports
-except:
-    pass
+# Manually add qframelesswindow package (installed as qframelesswindow, not pyqt6_frameless_window)
+frameless_path = os.path.join(site_packages, 'qframelesswindow')
+if os.path.exists(frameless_path):
+    datas.append((frameless_path, 'qframelesswindow'))
 
 # Add config files if they exist
 if os.path.exists('config'):
     datas += [('config', 'config')]
 
-# Don't include src as data, it will be compiled
-# datas += [('src', 'src')]
-
 # Add icon if it exists
 if os.path.exists('assets/icon.ico'):
     datas += [('assets/icon.ico', 'assets')]
 
-# Additional hidden imports - comprehensive list
-hiddenimports += [
+# Comprehensive hidden imports list
+hiddenimports = [
+    # qfluentwidgets and all submodules
+    'qfluentwidgets',
+    'qfluentwidgets.common',
+    'qfluentwidgets.common.style_sheet',
+    'qfluentwidgets.common.config',
+    'qfluentwidgets.common.icon',
+    'qfluentwidgets.common.font',
+    'qfluentwidgets.common.translator',
+    'qfluentwidgets.components',
+    'qfluentwidgets.components.dialog_box',
+    'qfluentwidgets.components.layout',
+    'qfluentwidgets.components.material',
+    'qfluentwidgets.components.navigation',
+    'qfluentwidgets.components.scrollbar',
+    'qfluentwidgets.components.settings',
+    'qfluentwidgets.components.widgets',
+    'qfluentwidgets.window',
+    'qfluentwidgets.multimedia',
+    'qfluentwidgets._rc',
+
+    # QFrameless Window
+    'qframelesswindow',
+    'qframelesswindow.windows',
+    'qframelesswindow.utils',
+
     # Core PyQt6 modules
     'PyQt6',
     'PyQt6.QtCore',
@@ -53,14 +66,6 @@ hiddenimports += [
     'PyQt6.QtWidgets',
     'PyQt6.QtSvg',
     'PyQt6.sip',
-
-    # qfluentwidgets and all its components
-    'qfluentwidgets',
-    'qfluentwidgets.common',
-    'qfluentwidgets.components',
-    'qfluentwidgets.window',
-    'qfluentwidgets.multimedia',
-    'qfluentwidgets._rc',
 
     # Database
     'sqlalchemy',
@@ -145,11 +150,11 @@ hiddenimports += [
 
 a = Analysis(
     ['main_improved.py'],
-    pathex=[os.getcwd()],  # Add current directory to path
-    binaries=binaries,
+    pathex=[os.getcwd(), site_packages],  # Add site-packages to path
+    binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=['.'],  # Use current directory for hooks
+    hookspath=['.'],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
@@ -180,13 +185,13 @@ exe = EXE(
     a.datas,
     [],
     name='ClipSyncer',
-    debug=False,  # Set to True for debugging
+    debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,  # Disable UPX compression to avoid issues
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,  # Set to True for debugging
+    console=True,  # Enable console to see errors
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

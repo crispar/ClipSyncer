@@ -6,7 +6,9 @@
       "Bash(pip install:*)",
       "Bash(venv\\\\Scripts\\\\python.exe -m pip:*)",
       "Bash(powershell:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(dir nul* 2)",
+      "Bash(NUL)"
     ],
     "deny": [],
     "ask": []

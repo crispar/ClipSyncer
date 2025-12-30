@@ -120,6 +120,20 @@ class ClipboardRepository:
             logger.error(f"Failed to get entries: {e}")
             return []
 
+    def get_entry_count(self) -> int:
+        """
+        Get total number of entries in the database
+
+        Returns:
+            Number of entries
+        """
+        try:
+            with self._session() as session:
+                return session.query(DatabaseEntry).count()
+        except Exception as e:
+            logger.error(f"Failed to get entry count: {e}")
+            return 0
+
     def delete_entry(self, content_hash: str) -> bool:
         """
         Delete entry by content hash

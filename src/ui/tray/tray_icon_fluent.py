@@ -24,12 +24,17 @@ class ModernTrayIcon(QObject):
         self._menu_items: List[Tuple[str, Callable]] = []
         self._timer: Optional[QTimer] = None
         self._running = False
+        self._monitoring_active = True  # Track monitoring state
 
         # Create modern icon based on theme
-        self._icon = self._create_modern_icon()
+        self._icon = self._create_modern_icon(self._monitoring_active)
 
-    def _create_modern_icon(self) -> QIcon:
-        """Create a modern icon that matches Windows 11 style"""
+    def _create_modern_icon(self, active: bool = True) -> QIcon:
+        """Create a modern icon that matches Windows 11 style
+
+        Args:
+            active: Whether monitoring is currently active
+        """
         # Create a pixmap for the icon
         pixmap = QPixmap(64, 64)
         pixmap.fill(QColor(0, 0, 0, 0))  # Transparent background
@@ -37,17 +42,27 @@ class ModernTrayIcon(QObject):
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Determine colors based on system theme
+        # Determine colors based on system theme and active state
         if isDarkTheme():
             # Dark theme colors
-            bg_color = QColor(32, 32, 32, 200)
-            fg_color = QColor(255, 255, 255, 240)
-            accent_color = QColor(0, 120, 212)
+            if active:
+                bg_color = QColor(32, 32, 32, 200)
+                fg_color = QColor(255, 255, 255, 240)
+                accent_color = QColor(0, 200, 83)  # Green for active
+            else:
+                bg_color = QColor(32, 32, 32, 150)
+                fg_color = QColor(180, 180, 180, 200)  # Dimmed for inactive
+                accent_color = QColor(255, 95, 95)  # Red for inactive
         else:
             # Light theme colors
-            bg_color = QColor(255, 255, 255, 200)
-            fg_color = QColor(32, 32, 32, 240)
-            accent_color = QColor(0, 103, 192)
+            if active:
+                bg_color = QColor(255, 255, 255, 200)
+                fg_color = QColor(32, 32, 32, 240)
+                accent_color = QColor(0, 170, 0)  # Green for active
+            else:
+                bg_color = QColor(240, 240, 240, 180)
+                fg_color = QColor(120, 120, 120, 200)  # Dimmed for inactive
+                accent_color = QColor(220, 50, 50)  # Red for inactive
 
         # Draw rounded rectangle background
         painter.setBrush(bg_color)
@@ -64,10 +79,18 @@ class ModernTrayIcon(QObject):
         clipboard_icon = "📋"  # Fallback emoji
         painter.drawText(pixmap.rect(), 0x1000 | 0x0004, clipboard_icon)
 
-        # Draw small accent dot to indicate active status
+        # Draw status indicator dot
         painter.setBrush(accent_color)
         painter.setPen(QColor(0, 0, 0, 0))
         painter.drawEllipse(44, 44, 12, 12)
+
+        # If inactive, draw a pause symbol overlay
+        if not active:
+            painter.setPen(QColor(255, 255, 255, 200))
+            painter.setBrush(QColor(0, 0, 0, 0))
+            pause_font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+            painter.setFont(pause_font)
+            painter.drawText(42, 42, 16, 16, 0x1000 | 0x0004, "⏸")
 
         painter.end()
 
@@ -119,7 +142,9 @@ class ModernTrayIcon(QObject):
                     if "History" in label:
                         action.setText("📜 " + label)
                     elif "Toggle" in label or "Monitor" in label:
-                        action.setText("⏸️ " + label)
+                        # Show play/pause icon based on monitoring state
+                        icon = "▶️" if not self._monitoring_active else "⏸️"
+                        action.setText(f"{icon} " + label)
                     elif "Sync" in label or "GitHub" in label:
                         action.setText("☁️ " + label)
                     elif "Cleanup" in label or "Clean" in label:
@@ -239,10 +264,18 @@ class ModernTrayIcon(QObject):
 
     def update_icon(self, active: bool = True):
         """Update icon to show active/inactive state"""
+        self._monitoring_active = active
         if self._tray_icon:
             # Recreate icon with updated state
-            self._icon = self._create_modern_icon()
+            self._icon = self._create_modern_icon(active)
             self._tray_icon.setIcon(self._icon)
+
+            # Update tooltip to reflect state
+            state_text = " (Active)" if active else " (Paused)"
+            base_tooltip = self._tooltip.replace(" (Active)", "").replace(" (Paused)", "")
+            self._tray_icon.setToolTip(base_tooltip + state_text)
+
+            logger.info(f"Updated tray icon - Monitoring: {'Active' if active else 'Paused'}")
 
     def stop(self) -> None:
         """Stop the system tray icon"""

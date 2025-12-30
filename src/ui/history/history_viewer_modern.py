@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
     QWidget, QListWidgetItem, QLabel, QSplitter
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QFont
 
 # Import Fluent Design components
@@ -39,6 +39,7 @@ class ModernHistoryViewer(QMainWindow):
         self.clipboard_history = clipboard_history
         self.repository = repository
         self.current_entries = []
+        self.last_entry_count = 0
 
         # Set window properties
         self.setWindowTitle("Clipboard History")
@@ -49,6 +50,11 @@ class ModernHistoryViewer(QMainWindow):
 
         self._init_ui()
         self._load_entries()
+
+        # Setup auto-refresh timer (check every 1 second)
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self._check_for_updates)
+        self.refresh_timer.start(1000)  # Check every second
 
     def _setup_theme(self):
         """Setup Fluent Design theme"""
@@ -254,16 +260,21 @@ class ModernHistoryViewer(QMainWindow):
             # Update count
             self.count_label.setText(f"{len(self.current_entries)} items")
 
-            # Show success notification
-            InfoBar.success(
-                title="Refreshed",
-                content=f"Loaded {len(self.current_entries)} entries",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=2000,
-                parent=self
-            )
+            # Update last entry count
+            self.last_entry_count = len(self.current_entries)
+
+            # Show success notification only for manual refresh or initial load
+            if not hasattr(self, '_initial_load_done'):
+                InfoBar.success(
+                    title="Loaded",
+                    content=f"Loaded {len(self.current_entries)} entries",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=2000,
+                    parent=self
+                )
+                self._initial_load_done = True
 
             logger.info(f"Loaded {len(self.current_entries)} entries")
 
@@ -278,6 +289,48 @@ class ModernHistoryViewer(QMainWindow):
                 duration=3000,
                 parent=self
             )
+
+    def _check_for_updates(self):
+        """Check for new clipboard entries and refresh if needed"""
+        try:
+            # Get current entry count
+            if self.repository:
+                current_count = self.repository.get_entry_count()
+            elif self.clipboard_history:
+                current_count = len(self.clipboard_history.get_entries())
+            else:
+                return
+
+            # If count changed, refresh the list
+            if current_count != self.last_entry_count:
+                # Remember current selection
+                current_row = self.history_list.currentRow()
+
+                # Reload entries
+                self._load_entries()
+                self.last_entry_count = current_count
+
+                # Restore selection if possible
+                if 0 <= current_row < self.history_list.count():
+                    self.history_list.setCurrentRow(current_row)
+                elif self.history_list.count() > 0:
+                    # Select the first (newest) item
+                    self.history_list.setCurrentRow(0)
+
+                # Show notification for new entry
+                if current_count > self.last_entry_count:
+                    InfoBar.success(
+                        title="New Entry",
+                        content="Clipboard history updated",
+                        orient=Qt.Orientation.Horizontal,
+                        isClosable=True,
+                        position=InfoBarPosition.BOTTOM_RIGHT,
+                        duration=1500,
+                        parent=self
+                    )
+
+        except Exception as e:
+            logger.error(f"Error checking for updates: {e}")
 
     def _add_entry_to_list(self, entry):
         """Add entry to list widget with modern styling"""
@@ -551,6 +604,9 @@ class ModernHistoryViewer(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close event"""
+        # Stop the auto-refresh timer
+        if hasattr(self, 'refresh_timer'):
+            self.refresh_timer.stop()
         logger.info("History viewer window closed")
         event.accept()
 

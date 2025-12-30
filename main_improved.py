@@ -205,12 +205,14 @@ class ClipboardHistoryApp:
             self.clipboard_monitor.stop()
             logger.info("Clipboard monitoring stopped")
             if self.tray_icon:
-                self.tray_icon.update_tooltip("ClipboardHistory (Paused)")
+                self.tray_icon.update_icon(active=False)  # Update icon to inactive state
+                # tooltip update is now handled in update_icon
         else:
             self.clipboard_monitor.start()
             logger.info("Clipboard monitoring started")
             if self.tray_icon:
-                self.tray_icon.update_tooltip("ClipboardHistory (Active)")
+                self.tray_icon.update_icon(active=True)  # Update icon to active state
+                # tooltip update is now handled in update_icon
 
     def _sync_to_github(self):
         """Manually sync to GitHub (runs in main thread)"""

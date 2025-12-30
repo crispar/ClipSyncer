@@ -1,0 +1,29 @@
+# GitHub Sync Configuration Example
+# Copy this file to %APPDATA%\ClipboardHistory\settings.yaml and fill in your details
+
+github:
+  enabled: true  # Set to true to enable GitHub sync
+  token: "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN"  # Generate from GitHub Settings > Developer settings > Personal access tokens
+  repository: "your-username/your-clipboard-backup-repo"  # Create a private repo for backups
+  branch: "main"
+  sync_interval: 3600  # Sync every hour (in seconds)
+
+# How to set up:
+# 1. Create a GitHub Personal Access Token:
+#    - Go to https://github.com/settings/tokens
+#    - Click "Generate new token (classic)"
+#    - Give it a name like "ClipboardSync"
+#    - Select scopes: "repo" (full control of private repositories)
+#    - Generate and copy the token
+#
+# 2. Create a private repository:
+#    - Go to https://github.com/new
+#    - Name it something like "clipboard-backup"
+#    - Make it PRIVATE (important for privacy!)
+#    - Create repository
+#
+# 3. Update this file with your information:
+#    - Replace YOUR_GITHUB_PERSONAL_ACCESS_TOKEN with your token
+#    - Replace your-username/your-clipboard-backup-repo with your repo
+#
+# 4. Copy this file to %APPDATA%\ClipboardHistory\settings.yaml

@@ -1,4 +1,4 @@
-"""Build script for creating executable"""
+"""Build script for ClipSyncer executable"""
 
 import os
 import sys
@@ -17,144 +17,25 @@ def clean_build():
             shutil.rmtree(dir_name)
             print(f"  Removed {dir_name}/")
 
-    # Remove spec files
-    for spec_file in Path('.').glob('*.spec'):
-        spec_file.unlink()
-        print(f"  Removed {spec_file}")
+    # Clean Python cache files but keep spec files
+    for root, dirs, files in os.walk('.'):
+        for file in files:
+            if file.endswith('.pyc'):
+                os.remove(os.path.join(root, file))
+        for dir_name in dirs:
+            if dir_name == '__pycache__':
+                shutil.rmtree(os.path.join(root, dir_name))
 
 
-def create_icon():
-    """Create application icon"""
-    print("Creating application icon...")
-
-    icon_script = '''
-from PIL import Image, ImageDraw
-
-# Create icon at multiple sizes
-sizes = [16, 32, 48, 64, 128, 256]
-images = []
-
-for size in sizes:
-    img = Image.new('RGBA', (size, size), (255, 255, 255, 0))
-    draw = ImageDraw.Draw(img)
-
-    # Scale factor
-    scale = size / 64.0
-
-    # Draw clipboard
-    clipboard_color = (70, 130, 180)
-    draw.rectangle(
-        [10*scale, 5*scale, 54*scale, 59*scale],
-        fill=clipboard_color
-    )
-    draw.rectangle(
-        [20*scale, 0, 44*scale, 10*scale],
-        fill=clipboard_color
-    )
-
-    # Draw clip
-    clip_color = (192, 192, 192)
-    draw.rectangle(
-        [25*scale, 0, 39*scale, 15*scale],
-        fill=clip_color
-    )
-
-    images.append(img)
-
-# Save as ICO file
-if images:
-    images[0].save(
-        'resources/icon.ico',
-        format='ICO',
-        sizes=[(img.width, img.height) for img in images]
-    )
-    print("  Icon created: resources/icon.ico")
-'''
-
-    # Create resources directory
-    os.makedirs('resources', exist_ok=True)
-
-    # Execute icon creation
-    exec(icon_script)
-
-
-def create_pyinstaller_spec():
-    """Create PyInstaller spec file"""
-    print("Creating PyInstaller spec file...")
-
-    spec_content = '''
-# -*- mode: python ; coding: utf-8 -*-
-
-block_cipher = None
-
-a = Analysis(
-    ['main.py'],
-    pathex=[],
-    binaries=[],
-    datas=[
-        ('config/default_settings.yaml', 'config'),
-        ('resources/icon.ico', 'resources'),
-    ],
-    hiddenimports=[
-        'PIL._tkinter_finder',
-        'pystray._win32',
-        'PyQt6.QtCore',
-        'PyQt6.QtGui',
-        'PyQt6.QtWidgets',
-        'sqlalchemy.ext.declarative',
-        'cryptography.hazmat.backends.openssl',
-        'cryptography.hazmat.primitives.ciphers',
-        'github',
-        'apscheduler.schedulers.background',
-        'keyring.backends.Windows',
-    ],
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[
-        'matplotlib',
-        'numpy',
-        'pandas',
-        'scipy',
-        'tkinter',
-    ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
-    noarchive=False,
-)
-
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name='ClipboardHistory',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,  # No console window
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon='resources/icon.ico',
-    version='version_info.txt'
-)
-'''
-
-    with open('ClipboardHistory.spec', 'w') as f:
-        f.write(spec_content)
-
-    print("  Spec file created: ClipboardHistory.spec")
+def check_icon():
+    """Check if icon exists"""
+    icon_path = Path('assets/icon.ico')
+    if icon_path.exists():
+        print(f"  Icon found: {icon_path}")
+        return True
+    else:
+        print(f"  Warning: Icon not found at {icon_path}")
+        return False
 
 
 def create_version_info():
@@ -206,22 +87,18 @@ def build_executable():
     """Build the executable using PyInstaller"""
     print("Building executable with PyInstaller...")
 
-    # Activate virtual environment for build
-    venv_python = Path('venv/Scripts/python.exe')
+    # Check if spec file exists
+    spec_file = 'ClipSyncer.spec'
+    if not Path(spec_file).exists():
+        print(f"  Error: {spec_file} not found!")
+        return False
 
-    if venv_python.exists():
-        python_exe = str(venv_python)
+    # Run PyInstaller - try venv first, then system
+    venv_pyinstaller = Path('./venv/Scripts/pyinstaller.exe')
+    if venv_pyinstaller.exists():
+        cmd = [str(venv_pyinstaller), spec_file, '--clean', '--noconfirm']
     else:
-        python_exe = sys.executable
-
-    # Run PyInstaller
-    cmd = [
-        python_exe,
-        '-m', 'PyInstaller',
-        '--clean',
-        '--noconfirm',
-        'ClipboardHistory.spec'
-    ]
+        cmd = [sys.executable, '-m', 'PyInstaller', spec_file, '--clean', '--noconfirm']
 
     print(f"  Running: {' '.join(cmd)}")
 
@@ -230,12 +107,28 @@ def build_executable():
 
         if result.returncode == 0:
             print("  Build successful!")
-            print(f"  Executable created: dist/ClipboardHistory.exe")
+
+            # Check if exe was created
+            exe_path = Path('dist/ClipSyncer.exe')
+            if exe_path.exists():
+                size_mb = exe_path.stat().st_size / (1024 * 1024)
+                print(f"  Executable created: {exe_path}")
+                print(f"  Size: {size_mb:.2f} MB")
+            else:
+                print("  Warning: Executable not found in dist/")
+                return False
         else:
             print(f"  Build failed with error code {result.returncode}")
-            print(f"  Error output: {result.stderr}")
+            if result.stderr:
+                print(f"  Error output:\n{result.stderr}")
+            if result.stdout:
+                print(f"  Output:\n{result.stdout}")
             return False
 
+    except FileNotFoundError:
+        print("  Error: PyInstaller not found!")
+        print("  Please install PyInstaller: pip install pyinstaller")
+        return False
     except Exception as e:
         print(f"  Build error: {e}")
         return False
@@ -335,38 +228,36 @@ SectionEnd
 def main():
     """Main build process"""
     print("=" * 60)
-    print("ClipboardHistory Build Script")
+    print("ClipSyncer Build Script")
     print("=" * 60)
 
     # Step 1: Clean
     clean_build()
 
-    # Step 2: Create icon
-    create_icon()
+    # Step 2: Check icon
+    print("\nChecking assets...")
+    check_icon()
 
-    # Step 3: Create version info
-    create_version_info()
-
-    # Step 4: Create PyInstaller spec
-    create_pyinstaller_spec()
-
-    # Step 5: Build executable
+    # Step 3: Build executable
+    print()
     if build_executable():
         print("\n" + "=" * 60)
         print("BUILD SUCCESSFUL!")
         print("=" * 60)
-        print("\nExecutable location: dist/ClipboardHistory.exe")
-
-        # Step 6: Create installer script (optional)
-        create_installer_script()
+        print("\nExecutable location: dist/ClipSyncer.exe")
 
         print("\nNext steps:")
-        print("1. Test the executable: dist/ClipboardHistory.exe")
-        print("2. Create installer: makensis installer.nsi")
+        print("1. Test the executable: dist\\ClipSyncer.exe")
+        print("2. Commit and push to GitHub for automatic builds")
+        print("3. Create a release tag (e.g., v1.0.0) to trigger release")
     else:
         print("\n" + "=" * 60)
         print("BUILD FAILED!")
         print("=" * 60)
+        print("\nTroubleshooting:")
+        print("1. Make sure you have all dependencies: pip install -r requirements.txt")
+        print("2. Check if antivirus is blocking PyInstaller")
+        print("3. Try running as administrator")
         sys.exit(1)
 
 
