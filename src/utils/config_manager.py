@@ -102,6 +102,55 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"Failed to load user config: {e}")
 
+        # Also load GitHub-specific settings (saved by GitHubSettingsDialog)
+        self._load_github_settings()
+
+    def _load_github_settings(self):
+        """Load GitHub settings from separate file and keyring"""
+        try:
+            github_config_path = Path(self.config_path).parent / 'github_settings.yaml'
+
+            if github_config_path.exists():
+                with open(github_config_path, 'r', encoding='utf-8') as f:
+                    github_config = yaml.safe_load(f) or {}
+
+                if 'github' in github_config:
+                    github_settings = github_config['github']
+
+                    # Normalize repository format (URL to username/repo)
+                    repo = github_settings.get('repository', '')
+                    if repo.startswith('https://github.com/'):
+                        repo = repo.replace('https://github.com/', '')
+                        repo = repo.rstrip('/').removesuffix('.git')
+                        github_settings['repository'] = repo
+
+                    # Load token from keyring (secure storage)
+                    try:
+                        from src.core.encryption import KeyManager
+                        key_manager = KeyManager()
+                        token = key_manager.get_github_token()
+                        if token:
+                            github_settings['token'] = token
+                            logger.debug("Loaded GitHub token from secure keyring")
+                        elif github_settings.get('token'):
+                            # Migration: token still in YAML, move to keyring
+                            old_token = github_settings['token']
+                            if key_manager.store_github_token(old_token):
+                                logger.info("Migrated GitHub token to secure keyring")
+                    except Exception as e:
+                        logger.warning(f"Could not load GitHub token from keyring: {e}")
+
+                    # Merge GitHub settings
+                    if 'github' not in self.config:
+                        self.config['github'] = {}
+                    self._merge_config(self.config['github'], github_settings)
+
+                    logger.info(f"Loaded GitHub settings from {github_config_path}")
+                    logger.debug(f"GitHub enabled: {self.config['github'].get('enabled')}, repo: {self.config['github'].get('repository')}")
+
+        except Exception as e:
+            logger.error(f"Failed to load GitHub settings: {e}")
+
     def _merge_config(self, base: Dict, updates: Dict):
         """
         Recursively merge configuration dictionaries

@@ -59,6 +59,9 @@ class ClipboardHistoryApp:
         # Threading
         self._shutdown_event = threading.Event()
 
+        # GitHub sync state
+        self.is_github_primary = False
+
         # Setup logging
         self._setup_logging()
 
@@ -67,7 +70,7 @@ class ClipboardHistoryApp:
         logger.info("=" * 60)
 
     def _load_github_settings(self):
-        """Load GitHub settings from dedicated file"""
+        """Load GitHub settings from dedicated file and keyring"""
         try:
             config_path = os.path.join(
                 os.environ.get('APPDATA', '.'),
@@ -78,7 +81,20 @@ class ClipboardHistoryApp:
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     settings = yaml.safe_load(f) or {}
-                    return settings.get('github', {})
+                    github_settings = settings.get('github', {})
+
+                    # Load token from keyring (secure storage)
+                    try:
+                        from src.core.encryption import KeyManager
+                        key_manager = KeyManager()
+                        token = key_manager.get_github_token()
+                        if token:
+                            github_settings['token'] = token
+                            logger.debug("Loaded GitHub token from secure keyring")
+                    except Exception as e:
+                        logger.warning(f"Could not load GitHub token from keyring: {e}")
+
+                    return github_settings
         except Exception as e:
             logger.error(f"Failed to load GitHub settings: {e}")
 
@@ -190,6 +206,7 @@ class ClipboardHistoryApp:
                     logger.info(f"GitHub sync initialized for repository: {repository} (Primary Storage)")
 
                     # GitHub is always primary storage - local DB is cache-only
+                    self.is_github_primary = github_settings.get('is_primary_storage', True)
                     logger.info("GitHub is PRIMARY storage - local DB will be cache-only")
                     # Pull from GitHub immediately to populate local cache
                     logger.info("Performing initial sync from GitHub...")

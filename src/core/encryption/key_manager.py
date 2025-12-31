@@ -3,6 +3,7 @@
 import base64
 import os
 import hashlib
+import hmac
 from typing import Optional
 import keyring
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -21,6 +22,7 @@ class KeyManager:
     SERVICE_NAME = "ClipboardHistory"
     KEY_NAME = "encryption_key"
     SYNC_PASSWORD_KEY = "sync_password_hash"  # Store hash to verify password
+    GITHUB_TOKEN_KEY = "github_token"  # Store GitHub token securely
 
     def __init__(self):
         """Initialize key manager"""
@@ -208,7 +210,8 @@ class KeyManager:
                 100000
             )
 
-            return password_hash == stored_hash
+            # Use constant-time comparison to prevent timing attacks
+            return hmac.compare_digest(password_hash, stored_hash)
 
         except Exception as e:
             logger.error(f"Password verification failed: {e}")
@@ -270,6 +273,70 @@ class KeyManager:
         else:
             # First time setting password
             return self.set_sync_password(password)
+
+    # =====================================================
+    # GitHub Token Secure Storage
+    # =====================================================
+
+    def store_github_token(self, token: str) -> bool:
+        """
+        Store GitHub token securely in system keyring.
+
+        Args:
+            token: GitHub personal access token
+
+        Returns:
+            True if successful
+        """
+        try:
+            keyring.set_password(self.SERVICE_NAME, self.GITHUB_TOKEN_KEY, token)
+            logger.info("GitHub token stored securely in keyring")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to store GitHub token: {e}")
+            return False
+
+    def get_github_token(self) -> Optional[str]:
+        """
+        Retrieve GitHub token from system keyring.
+
+        Returns:
+            GitHub token or None if not found
+        """
+        try:
+            token = keyring.get_password(self.SERVICE_NAME, self.GITHUB_TOKEN_KEY)
+            return token
+        except Exception as e:
+            logger.error(f"Failed to retrieve GitHub token: {e}")
+            return None
+
+    def delete_github_token(self) -> bool:
+        """
+        Delete GitHub token from system keyring.
+
+        Returns:
+            True if successful
+        """
+        try:
+            keyring.delete_password(self.SERVICE_NAME, self.GITHUB_TOKEN_KEY)
+            logger.info("GitHub token deleted from keyring")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete GitHub token: {e}")
+            return False
+
+    def has_github_token(self) -> bool:
+        """
+        Check if GitHub token is stored.
+
+        Returns:
+            True if token exists
+        """
+        try:
+            token = keyring.get_password(self.SERVICE_NAME, self.GITHUB_TOKEN_KEY)
+            return token is not None
+        except Exception:
+            return False
 
     def verify_access(self) -> bool:
         """

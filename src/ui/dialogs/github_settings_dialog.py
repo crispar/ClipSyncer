@@ -155,8 +155,14 @@ class GitHubSettingsDialog(QDialog):
         self.token_input = PasswordLineEdit()
         self.token_input.setPlaceholderText("ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 
-        # Show token if it exists (masked)
-        if self.current_settings.get('token'):
+        # Load token from keyring (secure storage) or fallback to config
+        from src.core.encryption import KeyManager
+        self._key_manager = KeyManager()
+        stored_token = self._key_manager.get_github_token()
+        if stored_token:
+            self.token_input.setText(stored_token)
+        elif self.current_settings.get('token'):
+            # Migration: load from old config file
             self.token_input.setText(self.current_settings['token'])
 
         main_layout.addWidget(self.token_input)
@@ -168,9 +174,7 @@ class GitHubSettingsDialog(QDialog):
         self.sync_password_input = PasswordLineEdit()
         self.sync_password_input.setPlaceholderText("Enter same password on all devices")
 
-        # Check if sync password exists
-        from src.core.encryption import KeyManager
-        self._key_manager = KeyManager()
+        # Check if sync password exists (reuse _key_manager from above)
         if self._key_manager.has_sync_password():
             self.sync_password_input.setPlaceholderText("Password already set (leave empty to keep)")
 
@@ -424,11 +428,23 @@ class GitHubSettingsDialog(QDialog):
                 )
                 return
 
-        # Save settings with parsed URL values
+        # Store token securely in keyring (not in YAML file)
+        if not self._key_manager.store_github_token(token):
+            InfoBar.error(
+                title="Token Storage Error",
+                content="Failed to store token securely. Please try again.",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self
+            )
+            return
+
+        # Save settings WITHOUT token (token is in keyring)
         settings = {
             'github': {
                 'repository': repository,
-                'token': token,
                 'enterprise_url': enterprise_url,
                 'auto_sync_interval_minutes': auto_sync,
                 'auto_sync_enabled': auto_sync > 0,
@@ -445,14 +461,16 @@ class GitHubSettingsDialog(QDialog):
             )
             os.makedirs(config_dir, exist_ok=True)
 
-            # Save to file
+            # Save to file (token is NOT included - stored in keyring)
             config_path = os.path.join(config_dir, 'github_settings.yaml')
 
             with open(config_path, 'w') as f:
                 yaml.safe_dump(settings, f)
 
-            # Emit signal with new settings
-            self.settings_saved.emit(settings['github'])
+            # Emit signal with new settings (include token for in-memory use)
+            emit_settings = settings['github'].copy()
+            emit_settings['token'] = token
+            self.settings_saved.emit(emit_settings)
 
             InfoBar.success(
                 title="Settings Saved",

@@ -128,8 +128,8 @@ class GitHubSyncService:
                         repo = self.github.get_repo(f"{user.login}/{repo_name}")
                         logger.info(f"Found existing repository after creation failed: {user.login}/{repo_name}")
                         return repo
-                    except:
-                        pass
+                    except GithubException as retry_error:
+                        logger.debug(f"Retry to get existing repo also failed: {retry_error}")
                 return None
 
     def upload_backup(self, data: Dict[str, Any], filename: Optional[str] = None) -> bool:

@@ -1,6 +1,7 @@
 """Clipboard history management with duplicate detection"""
 
 import hashlib
+import threading
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
@@ -61,6 +62,7 @@ class ClipboardHistory:
         self.dedupe_enabled = dedupe_enabled
         self._entries: List[ClipboardEntry] = []
         self._hash_index: Dict[str, ClipboardEntry] = {}
+        self._lock = threading.RLock()
 
         logger.info(f"ClipboardHistory initialized (max_size={max_size}, dedupe={dedupe_enabled})")
 
@@ -94,29 +96,30 @@ class ClipboardHistory:
             category=category
         )
 
-        # Handle duplicates
-        if self.dedupe_enabled and entry.content_hash in self._hash_index:
-            # Update timestamp of existing entry (move to top)
-            existing = self._hash_index[entry.content_hash]
-            self._entries.remove(existing)
-            existing.timestamp = timestamp
-            self._entries.insert(0, existing)
-            logger.debug(f"Updated duplicate entry timestamp: {entry.content_hash[:8]}")
-            return False, None
+        with self._lock:
+            # Handle duplicates
+            if self.dedupe_enabled and entry.content_hash in self._hash_index:
+                # Update timestamp of existing entry (move to top)
+                existing = self._hash_index[entry.content_hash]
+                self._entries.remove(existing)
+                existing.timestamp = timestamp
+                self._entries.insert(0, existing)
+                logger.debug(f"Updated duplicate entry timestamp: {entry.content_hash[:8]}")
+                return False, None
 
-        # Add new entry
-        self._entries.insert(0, entry)
-        self._hash_index[entry.content_hash] = entry
+            # Add new entry
+            self._entries.insert(0, entry)
+            self._hash_index[entry.content_hash] = entry
 
-        # Enforce max size
-        removed_entry = None
-        if len(self._entries) > self.max_size:
-            removed_entry = self._entries.pop()
-            del self._hash_index[removed_entry.content_hash]
-            logger.debug(f"Removed oldest entry: {removed_entry.content_hash[:8]}")
+            # Enforce max size
+            removed_entry = None
+            if len(self._entries) > self.max_size:
+                removed_entry = self._entries.pop()
+                del self._hash_index[removed_entry.content_hash]
+                logger.debug(f"Removed oldest entry: {removed_entry.content_hash[:8]}")
 
-        logger.info(f"Added new entry: category={category}, hash={entry.content_hash[:8]}")
-        return True, removed_entry
+            logger.info(f"Added new entry: category={category}, hash={entry.content_hash[:8]}")
+            return True, removed_entry
 
     def get_entries(self, limit: Optional[int] = None) -> List[ClipboardEntry]:
         """
@@ -128,9 +131,10 @@ class ClipboardHistory:
         Returns:
             List of clipboard entries (newest first)
         """
-        if limit:
-            return self._entries[:limit]
-        return self._entries.copy()
+        with self._lock:
+            if limit:
+                return self._entries[:limit]
+            return self._entries.copy()
 
     def search(self, query: str, case_sensitive: bool = False) -> List[ClipboardEntry]:
         """
@@ -146,18 +150,20 @@ class ClipboardHistory:
         if not case_sensitive:
             query = query.lower()
 
-        results = []
-        for entry in self._entries:
-            content = entry.content if case_sensitive else entry.content.lower()
-            if query in content:
-                results.append(entry)
+        with self._lock:
+            results = []
+            for entry in self._entries:
+                content = entry.content if case_sensitive else entry.content.lower()
+                if query in content:
+                    results.append(entry)
 
-        return results
+            return results
 
     def clear(self) -> None:
         """Clear all history"""
-        self._entries.clear()
-        self._hash_index.clear()
+        with self._lock:
+            self._entries.clear()
+            self._hash_index.clear()
         logger.info("Clipboard history cleared")
 
     def remove_duplicates(self) -> int:
@@ -170,19 +176,20 @@ class ClipboardHistory:
         if not self.dedupe_enabled:
             return 0
 
-        seen = set()
-        new_entries = []
-        removed_count = 0
+        with self._lock:
+            seen = set()
+            new_entries = []
+            removed_count = 0
 
-        for entry in self._entries:
-            if entry.content_hash not in seen:
-                seen.add(entry.content_hash)
-                new_entries.append(entry)
-            else:
-                removed_count += 1
+            for entry in self._entries:
+                if entry.content_hash not in seen:
+                    seen.add(entry.content_hash)
+                    new_entries.append(entry)
+                else:
+                    removed_count += 1
 
-        self._entries = new_entries
-        self._rebuild_hash_index()
+            self._entries = new_entries
+            self._rebuild_hash_index()
 
         if removed_count > 0:
             logger.info(f"Removed {removed_count} duplicate entries")
@@ -200,12 +207,13 @@ class ClipboardHistory:
             Number of entries removed
         """
         cutoff = datetime.now() - timedelta(days=days)
-        original_count = len(self._entries)
 
-        self._entries = [e for e in self._entries if e.timestamp > cutoff]
-        self._rebuild_hash_index()
+        with self._lock:
+            original_count = len(self._entries)
+            self._entries = [e for e in self._entries if e.timestamp > cutoff]
+            self._rebuild_hash_index()
+            removed_count = original_count - len(self._entries)
 
-        removed_count = original_count - len(self._entries)
         if removed_count > 0:
             logger.info(f"Removed {removed_count} entries older than {days} days")
 
@@ -231,19 +239,20 @@ class ClipboardHistory:
         if not entry or not entry.content_hash:
             return False
 
-        # Check for duplicate
-        if entry.content_hash in self._hash_index:
-            logger.debug(f"Skipped duplicate import: {entry.content_hash[:8]}")
-            return False
+        with self._lock:
+            # Check for duplicate
+            if entry.content_hash in self._hash_index:
+                logger.debug(f"Skipped duplicate import: {entry.content_hash[:8]}")
+                return False
 
-        # Add to history
-        self._entries.append(entry)
-        self._hash_index[entry.content_hash] = entry
+            # Add to history
+            self._entries.append(entry)
+            self._hash_index[entry.content_hash] = entry
 
-        # Enforce max size
-        while len(self._entries) > self.max_size:
-            removed = self._entries.pop(0)  # Remove oldest (at start after append)
-            del self._hash_index[removed.content_hash]
+            # Enforce max size
+            while len(self._entries) > self.max_size:
+                removed = self._entries.pop(0)  # Remove oldest (at start after append)
+                del self._hash_index[removed.content_hash]
 
         logger.debug(f"Imported entry: {entry.content_hash[:8]}")
         return True
@@ -258,7 +267,8 @@ class ClipboardHistory:
         Returns:
             True if entry exists
         """
-        return content_hash in self._hash_index
+        with self._lock:
+            return content_hash in self._hash_index
 
     def _detect_category(self, content: str) -> str:
         """
@@ -291,31 +301,34 @@ class ClipboardHistory:
 
     def to_json(self) -> str:
         """Export history to JSON"""
-        data = {
-            'entries': [e.to_dict() for e in self._entries],
-            'max_size': self.max_size,
-            'dedupe_enabled': self.dedupe_enabled
-        }
+        with self._lock:
+            data = {
+                'entries': [e.to_dict() for e in self._entries],
+                'max_size': self.max_size,
+                'dedupe_enabled': self.dedupe_enabled
+            }
         return json.dumps(data, indent=2)
 
     def from_json(self, json_str: str) -> None:
         """Import history from JSON"""
         data = json.loads(json_str)
 
-        self.max_size = data.get('max_size', 1000)
-        self.dedupe_enabled = data.get('dedupe_enabled', True)
+        with self._lock:
+            self.max_size = data.get('max_size', 1000)
+            self.dedupe_enabled = data.get('dedupe_enabled', True)
 
-        self._entries = []
-        self._hash_index = {}
+            self._entries = []
+            self._hash_index = {}
 
-        for entry_data in data.get('entries', []):
-            entry = ClipboardEntry.from_dict(entry_data)
-            self._entries.append(entry)
-            self._hash_index[entry.content_hash] = entry
+            for entry_data in data.get('entries', []):
+                entry = ClipboardEntry.from_dict(entry_data)
+                self._entries.append(entry)
+                self._hash_index[entry.content_hash] = entry
 
         logger.info(f"Imported {len(self._entries)} entries from JSON")
 
     @property
     def size(self) -> int:
         """Get current number of entries"""
-        return len(self._entries)
+        with self._lock:
+            return len(self._entries)
