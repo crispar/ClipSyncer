@@ -64,7 +64,7 @@ class ClipboardHistory:
 
         logger.info(f"ClipboardHistory initialized (max_size={max_size}, dedupe={dedupe_enabled})")
 
-    def add_entry(self, content: str, timestamp: Optional[datetime] = None) -> bool:
+    def add_entry(self, content: str, timestamp: Optional[datetime] = None) -> tuple[bool, Optional['ClipboardEntry']]:
         """
         Add new entry to history
 
@@ -73,10 +73,12 @@ class ClipboardHistory:
             timestamp: Optional timestamp (defaults to now)
 
         Returns:
-            True if entry was added, False if duplicate
+            Tuple of (entry_added, removed_entry):
+                - entry_added: True if entry was added, False if duplicate
+                - removed_entry: The entry that was removed due to max_size, if any
         """
         if not content:
-            return False
+            return False, None
 
         if timestamp is None:
             timestamp = datetime.now()
@@ -100,20 +102,21 @@ class ClipboardHistory:
             existing.timestamp = timestamp
             self._entries.insert(0, existing)
             logger.debug(f"Updated duplicate entry timestamp: {entry.content_hash[:8]}")
-            return False
+            return False, None
 
         # Add new entry
         self._entries.insert(0, entry)
         self._hash_index[entry.content_hash] = entry
 
         # Enforce max size
+        removed_entry = None
         if len(self._entries) > self.max_size:
-            removed = self._entries.pop()
-            del self._hash_index[removed.content_hash]
-            logger.debug(f"Removed oldest entry: {removed.content_hash[:8]}")
+            removed_entry = self._entries.pop()
+            del self._hash_index[removed_entry.content_hash]
+            logger.debug(f"Removed oldest entry: {removed_entry.content_hash[:8]}")
 
         logger.info(f"Added new entry: category={category}, hash={entry.content_hash[:8]}")
-        return True
+        return True, removed_entry
 
     def get_entries(self, limit: Optional[int] = None) -> List[ClipboardEntry]:
         """

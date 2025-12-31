@@ -134,11 +134,11 @@ class GitHubSyncService:
 
     def upload_backup(self, data: Dict[str, Any], filename: Optional[str] = None) -> bool:
         """
-        Upload encrypted backup to GitHub
+        Upload encrypted backup to GitHub (always uses single file for sync)
 
         Args:
             data: Data to upload (should be encrypted)
-            filename: Optional filename (defaults to timestamp)
+            filename: Ignored - always uses clipboard_sync.json
 
         Returns:
             True if successful
@@ -148,13 +148,8 @@ class GitHubSyncService:
             return False
 
         try:
-            # Generate filename if not provided
-            if not filename:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"clipboard_backup_{timestamp}.json"
-
-            # Ensure data is in backups folder
-            filepath = f"backups/{filename}"
+            # Always use the same file for sync (Primary Storage mode)
+            filepath = "backups/clipboard_sync.json"
 
             # Convert data to JSON
             content = json.dumps(data, indent=2)
@@ -165,17 +160,17 @@ class GitHubSyncService:
                 # Update existing file
                 self.repo.update_file(
                     path=filepath,
-                    message=f"Update clipboard backup: {filename}",
+                    message="Update clipboard sync data",
                     content=content,
                     sha=existing_file.sha
                 )
-                logger.info(f"Updated backup file: {filepath}")
+                logger.info(f"Updated sync file: {filepath}")
 
             except GithubException:
                 # Create new file
                 self.repo.create_file(
                     path=filepath,
-                    message=f"Add clipboard backup: {filename}",
+                    message="Initial clipboard sync data",
                     content=content
                 )
                 logger.info(f"Created new backup file: {filepath}")
@@ -186,12 +181,12 @@ class GitHubSyncService:
             logger.error(f"Failed to upload backup: {e}")
             return False
 
-    def download_backup(self, filename: str) -> Optional[Dict[str, Any]]:
+    def download_backup(self, filename: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Download backup from GitHub
+        Download backup from GitHub (always uses single file for sync)
 
         Args:
-            filename: Name of backup file
+            filename: Ignored - always uses clipboard_sync.json
 
         Returns:
             Backup data or None
@@ -201,7 +196,8 @@ class GitHubSyncService:
             return None
 
         try:
-            filepath = f"backups/{filename}"
+            # Always use the same file for sync (Primary Storage mode)
+            filepath = "backups/clipboard_sync.json"
             file_content = self.repo.get_contents(filepath)
 
             # Decode content

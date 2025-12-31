@@ -21,6 +21,7 @@ from src.services.cleanup.cleanup_service import (
     DuplicateRemover, OldDataCleaner, DatabaseOptimizer
 )
 from src.services.auto_sync_service import AutoSyncService
+from src.services.archive_manager import ArchiveManager
 from src.ui.tray import TrayIcon
 from src.ui.history import HistoryViewer
 from src.utils import ConfigManager
@@ -49,6 +50,7 @@ class ClipboardHistoryApp:
         self.repository = None
         self.github_sync = None
         self.cleanup_service = None
+        self.archive_manager = None
         self.tray_icon = None
         self.history_viewer = None
         self.qt_app = None
@@ -183,8 +185,15 @@ class ClipboardHistoryApp:
                 enterprise_url = github_settings.get('enterprise_url')
 
                 if token and repository:
+                    # Initialize GitHubSyncService (always primary storage)
                     self.github_sync = GitHubSyncService(token, repository, enterprise_url)
-                    logger.info(f"GitHub sync initialized for repository: {repository}")
+                    logger.info(f"GitHub sync initialized for repository: {repository} (Primary Storage)")
+
+                    # GitHub is always primary storage - local DB is cache-only
+                    logger.info("GitHub is PRIMARY storage - local DB will be cache-only")
+                    # Pull from GitHub immediately to populate local cache
+                    logger.info("Performing initial sync from GitHub...")
+                    self._initial_github_sync()
 
                     # Initialize auto sync if configured
                     auto_sync_enabled = github_settings.get('auto_sync_enabled', True)
@@ -192,10 +201,11 @@ class ClipboardHistoryApp:
 
                     if auto_sync_enabled:
                         self.auto_sync = AutoSyncService()
-                        self.auto_sync.set_push_callback(self._auto_sync_to_github)
+                        # Always use immediate push for primary storage
+                        self.auto_sync.set_push_callback(self._immediate_sync_to_github)
                         # Enable pull to retrieve GitHub data periodically
                         self.auto_sync.set_pull_callback(self._pull_from_github)
-                        logger.info(f"Auto sync configured with real-time push and periodic pull")
+                        logger.info("Auto sync configured with immediate push and periodic pull")
                 else:
                     logger.warning("GitHub sync disabled: missing credentials")
             elif self.config_manager.get('github.enabled'):
@@ -224,6 +234,10 @@ class ClipboardHistoryApp:
             else:
                 logger.info("GitHub sync not configured")
 
+            # Initialize archive manager
+            logger.info("Initializing archive manager...")
+            self.archive_manager = ArchiveManager(self.github_sync)
+
             # Initialize cleanup service
             logger.info("Initializing cleanup service...")
             cleanup_interval = self.config_manager.get('cleanup.cleanup_interval', 3600)
@@ -241,6 +255,13 @@ class ClipboardHistoryApp:
             optimizer = DatabaseOptimizer(self.database_manager)
             self.cleanup_service.add_task(optimizer.optimize, "database_optimization")
 
+            # Add archive cleanup task (runs daily)
+            if self.archive_manager:
+                self.cleanup_service.add_task(
+                    self.archive_manager.cleanup_old_archives,
+                    "archive_cleanup"
+                )
+
             logger.info("Application initialized successfully")
             return True
 
@@ -252,7 +273,23 @@ class ClipboardHistoryApp:
         """Handle clipboard change event"""
         try:
             # Add to history
-            added = self.clipboard_history.add_entry(content, timestamp)
+            added, removed_entry = self.clipboard_history.add_entry(content, timestamp)
+
+            # Archive the removed entry if any
+            if removed_entry and self.archive_manager:
+                try:
+                    # Convert entry to dict format for archiving
+                    archive_entry = {
+                        'content': removed_entry.content,
+                        'timestamp': removed_entry.timestamp.isoformat(),
+                        'content_hash': removed_entry.content_hash,
+                        'category': removed_entry.category,
+                        'metadata': removed_entry.metadata
+                    }
+                    self.archive_manager.archive_entries([archive_entry])
+                    logger.debug(f"Archived overflow entry: {removed_entry.content_hash[:8]}")
+                except Exception as e:
+                    logger.error(f"Failed to archive overflow entry: {e}")
 
             if added:
                 # Save to database
@@ -374,26 +411,92 @@ class ClipboardHistoryApp:
             except Exception as e:
                 logger.error(f"Auto sync error: {e}")
 
+    def _initial_github_sync(self):
+        """Perform initial sync from GitHub when starting with GitHub as primary storage"""
+        if not self.github_sync or not self.github_sync.enabled:
+            return
+
+        try:
+            # Clear local cache first (GitHub is always primary)
+            logger.info("Clearing local cache before initial GitHub sync...")
+            self.repository.clear_all()
+            self.clipboard_history.clear()
+
+            # Download single sync file
+            logger.info("Loading initial data from GitHub...")
+            backup_data = self.github_sync.download_backup()
+            if not backup_data:
+                logger.error("Failed to download initial backup from GitHub")
+                return
+
+            decrypted = self.encryption_manager.decrypt_json(backup_data)
+            if not decrypted:
+                logger.warning("Failed to decrypt GitHub backup - may need sync password")
+                return
+
+            # Load all entries from GitHub
+            remote_entries = decrypted.get('entries', [])
+            loaded_count = 0
+
+            for entry_data in remote_entries:
+                try:
+                    from src.core.clipboard.history import ClipboardEntry
+                    from datetime import datetime
+                    entry = ClipboardEntry(
+                        content=entry_data['content'],
+                        timestamp=datetime.fromisoformat(entry_data['timestamp']),
+                        content_hash=entry_data.get('content_hash'),
+                        category=entry_data.get('category'),
+                        metadata=entry_data.get('metadata', {})
+                    )
+                    # Save to local cache
+                    self.repository.save_entry(entry)
+                    # Also add to in-memory history
+                    self.clipboard_history.add_entry(entry.content, entry.timestamp)
+                    loaded_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to load entry: {e}")
+
+            logger.info(f"Initial sync complete - loaded {loaded_count} entries from GitHub")
+
+        except Exception as e:
+            logger.error(f"Initial GitHub sync failed: {e}")
+
+    def _immediate_sync_to_github(self):
+        """Immediate sync to GitHub (no debounce) for primary storage mode"""
+        if not self.github_sync or not self.github_sync.enabled:
+            return
+
+        try:
+            # Export current history
+            history_data = {
+                'entries': [e.to_dict() for e in self.clipboard_history.get_entries()],
+                'settings': self.config_manager.get_all()
+            }
+
+            # Encrypt before upload
+            encrypted = self.encryption_manager.encrypt_json(history_data)
+
+            # Upload to GitHub (always uses single file)
+            success = self.github_sync.upload_backup(encrypted)
+
+            if success:
+                logger.info("Immediate sync to GitHub completed")
+            else:
+                logger.error("Immediate sync to GitHub failed")
+
+        except Exception as e:
+            logger.error(f"Immediate sync error: {e}")
+
     def _pull_from_github(self):
         """Pull latest backup from GitHub and merge with local data"""
         if not self.github_sync or not self.github_sync.enabled:
             return
 
         try:
-            # Get list of backups
-            backups = self.github_sync.list_backups()
-            if not backups:
-                logger.debug("No GitHub backups found to pull")
-                return
-
-            # Get the most recent backup
-            latest_backup = backups[0]  # Assuming sorted by date
-            filename = latest_backup['filename']
-
-            logger.info(f"Pulling latest backup: {filename}")
-
-            # Download and decrypt
-            backup_data = self.github_sync.download_backup(filename)
+            # Download single sync file
+            logger.debug("Pulling clipboard sync from GitHub")
+            backup_data = self.github_sync.download_backup()
             if not backup_data:
                 logger.error("Failed to download backup from GitHub")
                 return
@@ -403,34 +506,59 @@ class ClipboardHistoryApp:
                 logger.warning("Failed to decrypt GitHub backup - may need sync password")
                 return
 
-            # Merge entries (avoiding duplicates by content hash)
-            remote_entries = decrypted.get('entries', [])
-            existing_hashes = {e.content_hash for e in self.clipboard_history.get_entries()}
+            # For primary storage mode, replace local with GitHub data
+            if self.is_github_primary:
+                # Clear local and replace with GitHub data
+                self.clipboard_history.clear()
+                remote_entries = decrypted.get('entries', [])
 
-            merged_count = 0
-            for entry_data in remote_entries:
-                content_hash = entry_data.get('content_hash')
-                if content_hash not in existing_hashes:
-                    # Add new entry from remote
-                    from src.core.clipboard.history import ClipboardEntry
-                    from datetime import datetime
-                    entry = ClipboardEntry(
-                        content=entry_data['content'],
-                        timestamp=datetime.fromisoformat(entry_data['timestamp']),
-                        content_hash=content_hash,
-                        category=entry_data.get('category'),
-                        metadata=entry_data.get('metadata', {})
-                    )
-                    self.repository.save_entry(entry)
-                    merged_count += 1
+                for entry_data in remote_entries:
+                    try:
+                        from src.core.clipboard.history import ClipboardEntry
+                        from datetime import datetime
+                        entry = ClipboardEntry(
+                            content=entry_data['content'],
+                            timestamp=datetime.fromisoformat(entry_data['timestamp']),
+                            content_hash=entry_data.get('content_hash'),
+                            category=entry_data.get('category'),
+                            metadata=entry_data.get('metadata', {})
+                        )
+                        # Save to local cache
+                        self.repository.save_entry(entry)
+                        # Also add to in-memory history
+                        self.clipboard_history.add_entry(entry.content, entry.timestamp)
+                    except Exception as e:
+                        logger.error(f"Failed to load entry during pull: {e}")
 
-            if merged_count > 0:
-                logger.info(f"Merged {merged_count} new entries from GitHub")
-                # Refresh UI if viewer is open
-                if self.history_viewer:
-                    self.history_viewer.load_history()
+                logger.info(f"Replaced local cache with {len(remote_entries)} entries from GitHub")
             else:
-                logger.debug("No new entries to merge from GitHub")
+                # Merge mode for non-primary storage
+                remote_entries = decrypted.get('entries', [])
+                existing_hashes = {e.content_hash for e in self.clipboard_history.get_entries()}
+
+                merged_count = 0
+                for entry_data in remote_entries:
+                    content_hash = entry_data.get('content_hash')
+                    if content_hash not in existing_hashes:
+                        # Add new entry from remote
+                        from src.core.clipboard.history import ClipboardEntry
+                        from datetime import datetime
+                        entry = ClipboardEntry(
+                            content=entry_data['content'],
+                            timestamp=datetime.fromisoformat(entry_data['timestamp']),
+                            content_hash=content_hash,
+                            category=entry_data.get('category'),
+                            metadata=entry_data.get('metadata', {})
+                        )
+                        self.repository.save_entry(entry)
+                        merged_count += 1
+
+                if merged_count > 0:
+                    logger.info(f"Merged {merged_count} new entries from GitHub")
+
+            # Refresh UI if viewer is open
+            if self.history_viewer:
+                self.history_viewer.load_history()
 
         except Exception as e:
             logger.error(f"Pull from GitHub failed: {e}")
@@ -459,12 +587,75 @@ class ClipboardHistoryApp:
         logger.info("Quit requested")
         self.shutdown()
 
+    def _check_and_show_first_run(self):
+        """Check if this is first run and show welcome dialog if needed"""
+        from src.ui.dialogs.welcome_dialog import check_first_run, WelcomeDialog, mark_first_run_complete
+
+        if check_first_run():
+            logger.info("First run detected - showing welcome dialog")
+
+            # Show welcome dialog
+            welcome_dialog = WelcomeDialog()
+
+            def on_setup_completed(settings):
+                """Handle setup completion"""
+                logger.info("GitHub setup completed via welcome dialog")
+                # Reload GitHub settings to pick up new configuration
+                self.github_sync = None
+                self.auto_sync = None
+
+                # Re-initialize GitHub sync with new settings
+                if settings and settings.get('enabled'):
+                    token = settings.get('token')
+                    repository = settings.get('repository')
+                    enterprise_url = settings.get('enterprise_url')
+
+                    if token and repository:
+                        from src.services import GitHubSyncService
+                        self.github_sync = GitHubSyncService(token, repository, enterprise_url)
+                        self.is_github_primary = settings.get('is_primary_storage', False)
+
+                        if self.is_github_primary:
+                            logger.info("GitHub configured as primary storage")
+                            self._initial_github_sync()
+
+                        # Setup auto sync
+                        auto_sync_enabled = settings.get('auto_sync_enabled', True)
+                        if auto_sync_enabled:
+                            from src.services.auto_sync_service import AutoSyncService
+                            self.auto_sync = AutoSyncService()
+                            if self.is_github_primary:
+                                self.auto_sync.set_push_callback(self._immediate_sync_to_github)
+                            else:
+                                self.auto_sync.set_push_callback(self._auto_sync_to_github)
+                            self.auto_sync.set_pull_callback(self._pull_from_github)
+                            self.auto_sync.start()
+
+                mark_first_run_complete()
+
+            def on_setup_skipped():
+                """Handle setup skip"""
+                logger.info("User skipped GitHub setup - using local storage only")
+                mark_first_run_complete()
+
+            welcome_dialog.setup_completed.connect(on_setup_completed)
+            welcome_dialog.setup_skipped.connect(on_setup_skipped)
+
+            # Show dialog (blocking)
+            welcome_dialog.exec()
+
+            return True
+        return False
+
     def start(self):
         """Start the application"""
         try:
             # Create Qt application
             self.qt_app = QApplication(sys.argv)
             self.qt_app.setQuitOnLastWindowClosed(False)
+
+            # Check for first run and show welcome dialog if needed
+            self._check_and_show_first_run()
 
             # Create signal bridge
             self.signal_bridge = QtSignalBridge()

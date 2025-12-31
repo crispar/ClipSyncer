@@ -1,6 +1,7 @@
 """GitHub Settings Dialog for configuring sync"""
 
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
+from urllib.parse import urlparse
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QDialog
 from qfluentwidgets import (
@@ -121,19 +122,30 @@ class GitHubSettingsDialog(QDialog):
 
         # Instructions
         instructions = CaptionLabel(
-            "Configure GitHub sync to backup your clipboard history to a private repository.\n"
+            "Configure GitHub as your primary clipboard storage.\n"
+            "Local storage will be used as cache only.\n"
             "You'll need a GitHub Personal Access Token with 'repo' permissions."
         )
         instructions.setWordWrap(True)
         main_layout.addWidget(instructions)
 
-        # Repository field
-        repo_label = BodyLabel("Repository (username/repo):")
+        # Repository URL field (full URL)
+        repo_label = BodyLabel("Repository Full URL:")
         main_layout.addWidget(repo_label)
 
         self.repo_input = LineEdit()
-        self.repo_input.setPlaceholderText("e.g., myusername/clipboard-backup")
-        self.repo_input.setText(self.current_settings.get('repository', ''))
+        self.repo_input.setPlaceholderText("e.g., https://github.com/username/repo or https://github.sec.samsung.net/username/repo")
+
+        # Try to reconstruct full URL from existing settings
+        existing_repo = self.current_settings.get('repository', '')
+        existing_enterprise = self.current_settings.get('enterprise_url', '')
+        if existing_repo:
+            if existing_enterprise:
+                full_url = f"{existing_enterprise}/{existing_repo}"
+            else:
+                full_url = f"https://github.com/{existing_repo}"
+            self.repo_input.setText(full_url)
+
         main_layout.addWidget(self.repo_input)
 
         # Token field
@@ -148,21 +160,6 @@ class GitHubSettingsDialog(QDialog):
             self.token_input.setText(self.current_settings['token'])
 
         main_layout.addWidget(self.token_input)
-
-        # GitHub Enterprise URL field (optional)
-        enterprise_label = BodyLabel("GitHub Enterprise URL (optional):")
-        main_layout.addWidget(enterprise_label)
-
-        self.enterprise_input = LineEdit()
-        self.enterprise_input.setPlaceholderText("e.g., https://github.sec.samsung.net")
-        self.enterprise_input.setText(self.current_settings.get('enterprise_url', ''))
-        main_layout.addWidget(self.enterprise_input)
-
-        enterprise_help = CaptionLabel(
-            "Leave empty for GitHub.com, or enter your GitHub Enterprise URL"
-        )
-        enterprise_help.setWordWrap(True)
-        main_layout.addWidget(enterprise_help)
 
         # Sync Password field (for multi-device encryption)
         sync_password_label = BodyLabel("Sync Password (for multi-device encryption):")
@@ -230,12 +227,51 @@ class GitHubSettingsDialog(QDialog):
 
         main_layout.addLayout(button_layout)
 
+    def _parse_github_url(self, url: str) -> Tuple[str, str, Optional[str]]:
+        """
+        Parse GitHub URL to extract repository and enterprise URL
+
+        Args:
+            url: Full GitHub URL (e.g., https://github.com/user/repo or https://github.sec.samsung.net/user/repo)
+
+        Returns:
+            Tuple of (repository, base_url, enterprise_url)
+            - repository: "username/repo"
+            - base_url: The base URL (e.g., "https://github.com" or "https://github.sec.samsung.net")
+            - enterprise_url: None for github.com, base URL for enterprise
+        """
+        if not url:
+            return "", "", None
+
+        # Clean up URL
+        url = url.strip().rstrip('/')
+
+        # Parse URL
+        parsed = urlparse(url)
+
+        # Extract base URL
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        # Extract repository path (remove leading /)
+        path = parsed.path.lstrip('/')
+
+        # Remove .git suffix if present
+        if path.endswith('.git'):
+            path = path[:-4]
+
+        # For GitHub.com
+        if parsed.netloc == 'github.com':
+            return path, base_url, None
+        else:
+            # For GitHub Enterprise
+            return path, base_url, base_url
+
     def _test_connection(self):
         """Test GitHub connection with provided settings"""
-        repo = self.repo_input.text().strip()
+        repo_url = self.repo_input.text().strip()
         token = self.token_input.text().strip()
 
-        if not repo or not token:
+        if not repo_url or not token:
             InfoBar.warning(
                 title="Missing Information",
                 content="Please enter both repository and token",
@@ -252,13 +288,28 @@ class GitHubSettingsDialog(QDialog):
         state_tooltip.move(self.geometry().center())
         state_tooltip.show()
 
+        # Parse the repository URL
+        repository, base_url, enterprise_url = self._parse_github_url(repo_url)
+
+        if not repository:
+            InfoBar.warning(
+                title="Invalid URL",
+                content="Please enter a valid GitHub repository URL",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+            state_tooltip.hide()
+            return
+
         try:
             # Import GitHub sync service
             from src.services.sync.github_sync import GitHubSyncService
 
-            # Test connection with enterprise URL if provided
-            enterprise_url = self.enterprise_input.text().strip() or None
-            sync_service = GitHubSyncService(token, repo, enterprise_url)
+            # Test connection with parsed enterprise URL
+            sync_service = GitHubSyncService(token, repository, enterprise_url)
 
             if sync_service.test_connection():
                 state_tooltip.setContent("Connection successful!")
@@ -306,9 +357,8 @@ class GitHubSettingsDialog(QDialog):
 
     def _save_settings(self):
         """Save GitHub settings"""
-        repo = self.repo_input.text().strip()
+        repo_url = self.repo_input.text().strip()
         token = self.token_input.text().strip()
-        enterprise_url = self.enterprise_input.text().strip() or None
         sync_password = self.sync_password_input.text()
 
         try:
@@ -316,10 +366,25 @@ class GitHubSettingsDialog(QDialog):
         except ValueError:
             auto_sync = 0
 
-        if not repo or not token:
+        if not repo_url or not token:
             InfoBar.warning(
                 title="Missing Information",
                 content="Please enter both repository and token",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+            return
+
+        # Parse the repository URL
+        repository, base_url, enterprise_url = self._parse_github_url(repo_url)
+
+        if not repository:
+            InfoBar.warning(
+                title="Invalid URL",
+                content="Please enter a valid GitHub repository URL",
                 orient=Qt.Orientation.Horizontal,
                 isClosable=True,
                 position=InfoBarPosition.TOP,
@@ -359,15 +424,16 @@ class GitHubSettingsDialog(QDialog):
                 )
                 return
 
-        # Save settings
+        # Save settings with parsed URL values
         settings = {
             'github': {
-                'repository': repo,
+                'repository': repository,
                 'token': token,
                 'enterprise_url': enterprise_url,
                 'auto_sync_interval_minutes': auto_sync,
                 'auto_sync_enabled': auto_sync > 0,
-                'enabled': True
+                'enabled': True,
+                'is_primary_storage': True  # New flag to indicate GitHub is primary
             }
         }
 

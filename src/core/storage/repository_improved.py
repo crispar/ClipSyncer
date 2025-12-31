@@ -74,7 +74,9 @@ class ClipboardRepository:
                         entry_metadata=json.dumps(entry.metadata) if entry.metadata else None
                     )
                     session.add(db_entry)
-                    logger.debug(f"Saved new entry: {entry.content_hash[:8]}")
+                    # Handle both string and int hash types
+                    hash_str = str(entry.content_hash)[:8] if entry.content_hash else "unknown"
+                    logger.debug(f"Saved new entry: {hash_str}")
 
                 return True
 

@@ -108,7 +108,6 @@ hiddenimports += [
     'apscheduler',
     'apscheduler.schedulers',
     'apscheduler.schedulers.background',
-    'schedule',
 
     # Config
     'yaml',
@@ -120,20 +119,16 @@ hiddenimports += [
 
     # Utils
     'darkdetect',
-    'pynacl',
-    'pynacl.encoding',
-    'pynacl.public',
 
     # Our modules
     'src',
     'src.core',
     'src.core.clipboard',
     'src.core.storage',
-    'src.core.storage.models',
-    'src.core.storage.repository',
-    'src.core.storage.encryption',
-    'src.core.sync',
-    'src.core.sync.github_sync',
+    'src.services',
+    'src.services.archive_manager',
+    'src.services.sync',
+    'src.services.sync.github_sync',
     'src.ui',
     'src.ui.dialogs',
     'src.ui.dialogs.github_settings_dialog',
@@ -142,7 +137,6 @@ hiddenimports += [
     'src.ui.tray',
     'src.ui.tray.tray_icon_fluent',
     'src.utils',
-    'src.utils.qt_bridge',
 ]
 
 a = Analysis(
