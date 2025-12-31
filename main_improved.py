@@ -506,16 +506,16 @@ class ClipboardHistoryApp:
             logger.error(f"Immediate sync error: {e}")
 
     def _pull_from_github(self):
-        """Pull latest backup from GitHub and merge with local data"""
+        """Pull latest backup from GitHub and merge with local data (bidirectional sync)"""
         if not self.github_sync or not self.github_sync.enabled:
             return
 
         try:
-            # Download single sync file
+            # Download sync file from GitHub
             logger.debug("Pulling clipboard sync from GitHub")
             backup_data = self.github_sync.download_backup()
             if not backup_data:
-                logger.error("Failed to download backup from GitHub")
+                logger.debug("No backup found on GitHub or download failed")
                 return
 
             decrypted = self.encryption_manager.decrypt_json(backup_data)
@@ -523,55 +523,48 @@ class ClipboardHistoryApp:
                 logger.warning("Failed to decrypt GitHub backup - may need sync password")
                 return
 
-            # For primary storage mode, replace local with GitHub data
-            if self.is_github_primary:
-                # Clear local and replace with GitHub data
-                self.clipboard_history.clear()
-                remote_entries = decrypted.get('entries', [])
+            # Get remote entries as dict keyed by content_hash
+            remote_entries = decrypted.get('entries', [])
+            remote_by_hash = {e.get('content_hash'): e for e in remote_entries if e.get('content_hash')}
 
-                for entry_data in remote_entries:
-                    try:
-                        from src.core.clipboard.history import ClipboardEntry
-                        from datetime import datetime
-                        entry = ClipboardEntry(
-                            content=entry_data['content'],
-                            timestamp=datetime.fromisoformat(entry_data['timestamp']),
-                            content_hash=entry_data.get('content_hash'),
-                            category=entry_data.get('category'),
-                            metadata=entry_data.get('metadata', {})
-                        )
-                        # Save to local cache
+            # Get local entries
+            local_entries = self.clipboard_history.get_entries()
+            local_by_hash = {e.content_hash: e for e in local_entries}
+
+            # Find entries only in local (need to push to remote)
+            local_only_hashes = set(local_by_hash.keys()) - set(remote_by_hash.keys())
+            # Find entries only in remote (need to add to local)
+            remote_only_hashes = set(remote_by_hash.keys()) - set(local_by_hash.keys())
+
+            # Merge: Add remote-only entries to local
+            from src.core.clipboard.history import ClipboardEntry
+            from datetime import datetime
+
+            added_to_local = 0
+            for content_hash in remote_only_hashes:
+                entry_data = remote_by_hash[content_hash]
+                try:
+                    entry = ClipboardEntry(
+                        content=entry_data['content'],
+                        timestamp=datetime.fromisoformat(entry_data['timestamp']),
+                        content_hash=content_hash,
+                        category=entry_data.get('category'),
+                        metadata=entry_data.get('metadata', {})
+                    )
+                    # Add to local (import_entry avoids duplicates)
+                    if self.clipboard_history.import_entry(entry):
                         self.repository.save_entry(entry)
-                        # Also add to in-memory history
-                        self.clipboard_history.add_entry(entry.content, entry.timestamp)
-                    except Exception as e:
-                        logger.error(f"Failed to load entry during pull: {e}")
+                        added_to_local += 1
+                except Exception as e:
+                    logger.error(f"Failed to import remote entry {content_hash[:8]}: {e}")
 
-                logger.info(f"Replaced local cache with {len(remote_entries)} entries from GitHub")
-            else:
-                # Merge mode for non-primary storage
-                remote_entries = decrypted.get('entries', [])
-                existing_hashes = {e.content_hash for e in self.clipboard_history.get_entries()}
+            if added_to_local > 0:
+                logger.info(f"Added {added_to_local} entries from GitHub to local")
 
-                merged_count = 0
-                for entry_data in remote_entries:
-                    content_hash = entry_data.get('content_hash')
-                    if content_hash not in existing_hashes:
-                        # Add new entry from remote
-                        from src.core.clipboard.history import ClipboardEntry
-                        from datetime import datetime
-                        entry = ClipboardEntry(
-                            content=entry_data['content'],
-                            timestamp=datetime.fromisoformat(entry_data['timestamp']),
-                            content_hash=content_hash,
-                            category=entry_data.get('category'),
-                            metadata=entry_data.get('metadata', {})
-                        )
-                        self.repository.save_entry(entry)
-                        merged_count += 1
-
-                if merged_count > 0:
-                    logger.info(f"Merged {merged_count} new entries from GitHub")
+            # If there are local-only entries, push merged data back to GitHub
+            if local_only_hashes:
+                logger.info(f"Found {len(local_only_hashes)} local entries not on GitHub, syncing...")
+                self._push_merged_to_github()
 
             # Refresh UI if viewer is open
             if self.history_viewer:
@@ -579,6 +572,32 @@ class ClipboardHistoryApp:
 
         except Exception as e:
             logger.error(f"Pull from GitHub failed: {e}")
+
+    def _push_merged_to_github(self):
+        """Push current local state to GitHub (used after merge)"""
+        if not self.github_sync or not self.github_sync.enabled:
+            return
+
+        try:
+            # Export current history (which now includes merged remote entries)
+            history_data = {
+                'entries': [e.to_dict() for e in self.clipboard_history.get_entries()],
+                'settings': self.config_manager.get_all()
+            }
+
+            # Encrypt before upload
+            encrypted = self.encryption_manager.encrypt_json(history_data)
+
+            # Upload to GitHub
+            success = self.github_sync.upload_backup(encrypted)
+
+            if success:
+                logger.info("Pushed merged data to GitHub")
+            else:
+                logger.error("Failed to push merged data to GitHub")
+
+        except Exception as e:
+            logger.error(f"Push merged data failed: {e}")
 
     def _cleanup_now(self):
         """Run cleanup immediately (runs in main thread)"""
