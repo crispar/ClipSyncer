@@ -190,9 +190,11 @@ class ClipboardHistoryApp:
                     auto_sync_interval = github_settings.get('auto_sync_interval_minutes', 30)
 
                     if auto_sync_enabled:
-                        self.auto_sync = AutoSyncService(auto_sync_interval)
-                        self.auto_sync.set_sync_callback(self._auto_sync_to_github)
-                        logger.info(f"Auto sync configured for every {auto_sync_interval} minutes")
+                        self.auto_sync = AutoSyncService()
+                        self.auto_sync.set_push_callback(self._auto_sync_to_github)
+                        # Enable pull to retrieve GitHub data periodically
+                        self.auto_sync.set_pull_callback(self._pull_from_github)
+                        logger.info(f"Auto sync configured with real-time push and periodic pull")
                 else:
                     logger.warning("GitHub sync disabled: missing credentials")
             elif self.config_manager.get('github.enabled'):
@@ -210,9 +212,11 @@ class ClipboardHistoryApp:
                     auto_sync_interval = self.config_manager.get('github.auto_sync_interval_minutes', 30)
 
                     if auto_sync_enabled:
-                        self.auto_sync = AutoSyncService(auto_sync_interval)
-                        self.auto_sync.set_sync_callback(self._auto_sync_to_github)
-                        logger.info(f"Auto sync configured for every {auto_sync_interval} minutes")
+                        self.auto_sync = AutoSyncService()
+                        self.auto_sync.set_push_callback(self._auto_sync_to_github)
+                        # Enable pull to retrieve GitHub data periodically
+                        self.auto_sync.set_pull_callback(self._pull_from_github)
+                        logger.info(f"Auto sync configured with real-time push and periodic pull")
                 else:
                     logger.warning("GitHub sync disabled: missing credentials")
             else:
@@ -256,7 +260,7 @@ class ClipboardHistoryApp:
 
                 # Track change for auto sync
                 if self.auto_sync:
-                    self.auto_sync.increment_changes()
+                    self.auto_sync.trigger_push()
 
                 # Show notification if enabled
                 if self.config_manager.get('ui.show_notifications') and self.signal_bridge:
@@ -367,6 +371,67 @@ class ClipboardHistoryApp:
 
             except Exception as e:
                 logger.error(f"Auto sync error: {e}")
+
+    def _pull_from_github(self):
+        """Pull latest backup from GitHub and merge with local data"""
+        if not self.github_sync or not self.github_sync.enabled:
+            return
+
+        try:
+            # Get list of backups
+            backups = self.github_sync.list_backups()
+            if not backups:
+                logger.debug("No GitHub backups found to pull")
+                return
+
+            # Get the most recent backup
+            latest_backup = backups[0]  # Assuming sorted by date
+            filename = latest_backup['filename']
+
+            logger.info(f"Pulling latest backup: {filename}")
+
+            # Download and decrypt
+            backup_data = self.github_sync.download_backup(filename)
+            if not backup_data:
+                logger.error("Failed to download backup from GitHub")
+                return
+
+            decrypted = self.encryption_manager.decrypt_json(backup_data)
+            if not decrypted:
+                logger.warning("Failed to decrypt GitHub backup - may need sync password")
+                return
+
+            # Merge entries (avoiding duplicates by content hash)
+            remote_entries = decrypted.get('entries', [])
+            existing_hashes = {e.content_hash for e in self.clipboard_history.get_entries()}
+
+            merged_count = 0
+            for entry_data in remote_entries:
+                content_hash = entry_data.get('content_hash')
+                if content_hash not in existing_hashes:
+                    # Add new entry from remote
+                    from src.core.clipboard.history import ClipboardEntry
+                    from datetime import datetime
+                    entry = ClipboardEntry(
+                        content=entry_data['content'],
+                        timestamp=datetime.fromisoformat(entry_data['timestamp']),
+                        content_hash=content_hash,
+                        category=entry_data.get('category'),
+                        metadata=entry_data.get('metadata', {})
+                    )
+                    self.repository.save_entry(entry)
+                    merged_count += 1
+
+            if merged_count > 0:
+                logger.info(f"Merged {merged_count} new entries from GitHub")
+                # Refresh UI if viewer is open
+                if self.history_viewer:
+                    self.history_viewer.load_history()
+            else:
+                logger.debug("No new entries to merge from GitHub")
+
+        except Exception as e:
+            logger.error(f"Pull from GitHub failed: {e}")
 
     def _cleanup_now(self):
         """Run cleanup immediately (runs in main thread)"""

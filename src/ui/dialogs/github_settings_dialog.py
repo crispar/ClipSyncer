@@ -17,6 +17,7 @@ class GitHubSettingsDialog(QDialog):
     """Dialog for configuring GitHub sync settings"""
 
     settings_saved = pyqtSignal(dict)  # Signal emitted when settings are saved
+    restore_requested = pyqtSignal()  # Signal emitted when restore is requested
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -195,6 +196,10 @@ class GitHubSettingsDialog(QDialog):
         # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
+
+        self.restore_button = PushButton("Restore Backup", self, FIF.DOWNLOAD)
+        self.restore_button.clicked.connect(self._request_restore)
+        button_layout.addWidget(self.restore_button)
 
         self.test_button = PushButton("Test Connection", self, FIF.SYNC)
         self.test_button.clicked.connect(self._test_connection)
@@ -392,3 +397,26 @@ class GitHubSettingsDialog(QDialog):
                 duration=5000,
                 parent=self
             )
+
+    def _request_restore(self):
+        """Emit signal to request restore from backup"""
+        # Check if GitHub is configured
+        repo = self.repo_input.text().strip()
+        token = self.token_input.text().strip()
+
+        if not repo or not token:
+            InfoBar.warning(
+                title="GitHub Not Configured",
+                content="Please configure GitHub settings before restoring",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+            return
+
+        # Emit signal to trigger restore dialog
+        self.restore_requested.emit()
+        # Close this dialog
+        self.accept()

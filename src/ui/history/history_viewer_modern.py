@@ -646,6 +646,9 @@ class ModernHistoryViewer(QMainWindow):
             # Connect signal to handle saved settings
             dialog.settings_saved.connect(self._on_github_settings_saved)
 
+            # Add restore from GitHub button handler
+            dialog.restore_requested.connect(self._restore_from_github)
+
             dialog.exec()
 
         except ImportError as e:
@@ -724,6 +727,61 @@ class ModernHistoryViewer(QMainWindow):
                 )
             except Exception as e:
                 logger.error(f"Failed to reinitialize GitHub sync: {e}")
+
+    def _restore_from_github(self):
+        """Show dialog to restore from GitHub backup"""
+        try:
+            from src.ui.dialogs.restore_dialog import RestoreDialog
+
+            # Get current app instance for access to services
+            app = QApplication.instance()
+            if hasattr(app, 'main_window'):
+                main = app.main_window
+
+                if main.github_sync and main.github_sync.enabled:
+                    dialog = RestoreDialog(
+                        main.github_sync,
+                        main.repository,
+                        main.encryption_manager,
+                        self
+                    )
+
+                    # Connect signal to reload entries when restore is complete
+                    dialog.restore_completed.connect(self._load_entries)
+
+                    dialog.exec()
+                else:
+                    InfoBar.warning(
+                        title="GitHub Not Configured",
+                        content="Please configure GitHub settings first",
+                        orient=Qt.Orientation.Horizontal,
+                        isClosable=True,
+                        position=InfoBarPosition.TOP,
+                        duration=3000,
+                        parent=self
+                    )
+            else:
+                InfoBar.error(
+                    title="Error",
+                    content="Cannot access main application services",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to show restore dialog: {e}")
+            InfoBar.error(
+                title="Error",
+                content=f"Failed to restore: {str(e)}",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self
+            )
 
     def closeEvent(self, event):
         """Handle window close event"""
