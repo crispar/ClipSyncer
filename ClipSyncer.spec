@@ -24,12 +24,10 @@ except:
 # Also explicitly collect qfluentwidgets submodules
 hiddenimports += collect_submodules('qfluentwidgets')
 
-# Collect PyQt6 completely
+# Only collect PyQt6 data files (icons, translations), not all modules
 try:
-    pyqt6_datas, pyqt6_binaries, pyqt6_hiddenimports = collect_all('PyQt6')
+    pyqt6_datas = collect_data_files('PyQt6')
     datas += pyqt6_datas
-    binaries += pyqt6_binaries
-    hiddenimports += pyqt6_hiddenimports
 except:
     pass
 
@@ -149,6 +147,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # Data science / testing
         'matplotlib',
         'numpy',
         'pandas',
@@ -159,6 +158,40 @@ a = Analysis(
         'testing',
         'unittest',
         'pytest',
+        # Unused PyQt6 modules (large size savings)
+        'PyQt6.QtBluetooth',
+        'PyQt6.QtDBus',
+        'PyQt6.QtDesigner',
+        'PyQt6.QtHelp',
+        'PyQt6.QtMultimedia',
+        'PyQt6.QtMultimediaWidgets',
+        'PyQt6.QtNetwork',
+        'PyQt6.QtNetworkAuth',
+        'PyQt6.QtNfc',
+        'PyQt6.QtOpenGL',
+        'PyQt6.QtOpenGLWidgets',
+        'PyQt6.QtPositioning',
+        'PyQt6.QtPrintSupport',
+        'PyQt6.QtQml',
+        'PyQt6.QtQuick',
+        'PyQt6.QtQuick3D',
+        'PyQt6.QtQuickWidgets',
+        'PyQt6.QtRemoteObjects',
+        'PyQt6.QtSensors',
+        'PyQt6.QtSerialPort',
+        'PyQt6.QtSql',
+        'PyQt6.QtTest',
+        'PyQt6.QtWebChannel',
+        'PyQt6.QtWebEngineCore',
+        'PyQt6.QtWebEngineWidgets',
+        'PyQt6.QtWebSockets',
+        # 'PyQt6.QtXml',  # Required by qfluentwidgets
+        'PyQt6.Qt3DCore',
+        'PyQt6.Qt3DAnimation',
+        'PyQt6.Qt3DExtras',
+        'PyQt6.Qt3DInput',
+        'PyQt6.Qt3DLogic',
+        'PyQt6.Qt3DRender',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -179,8 +212,8 @@ exe = EXE(
     debug=False,  # Set to True for debugging
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,  # Disable UPX compression to avoid issues
-    upx_exclude=[],
+    upx=True,  # Enable UPX compression for smaller file size
+    upx_exclude=['qwindows.dll', 'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'python*.dll'],
     runtime_tmpdir=None,
     console=False,  # Console hidden, check logs/ folder for debugging
     disable_windowed_traceback=False,
