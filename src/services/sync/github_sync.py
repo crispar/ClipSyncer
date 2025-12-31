@@ -15,16 +15,19 @@ LATEST_SYNC_FILE = "sync/latest.json"  # Single file for real-time sync
 class GitHubSyncService:
     """Manages GitHub synchronization for clipboard data"""
 
-    def __init__(self, token: Optional[str] = None, repository: Optional[str] = None):
+    def __init__(self, token: Optional[str] = None, repository: Optional[str] = None,
+                 enterprise_url: Optional[str] = None):
         """
         Initialize GitHub sync service
 
         Args:
             token: GitHub personal access token
             repository: Repository name (format: username/repo)
+            enterprise_url: GitHub Enterprise URL (e.g., 'https://github.sec.samsung.net')
         """
         self.token = token
         self.repository_name = repository
+        self.enterprise_url = enterprise_url
         self.github = None
         self.repo = None
         self.enabled = False
@@ -38,7 +41,7 @@ class GitHubSyncService:
 
     def connect(self) -> bool:
         """
-        Connect to GitHub
+        Connect to GitHub or GitHub Enterprise
 
         Returns:
             True if successful
@@ -48,7 +51,15 @@ class GitHubSyncService:
                 logger.warning("No GitHub token provided")
                 return False
 
-            self.github = Github(self.token)
+            # Connect to GitHub Enterprise or regular GitHub
+            if self.enterprise_url:
+                # For GitHub Enterprise, we need to append /api/v3 to the base URL
+                api_url = f"{self.enterprise_url.rstrip('/')}/api/v3"
+                logger.info(f"Connecting to GitHub Enterprise at: {api_url}")
+                self.github = Github(base_url=api_url, auth=Github.Auth.Token(self.token))
+            else:
+                # Regular GitHub.com
+                self.github = Github(self.token)
 
             # Verify token by getting user
             user = self.github.get_user()

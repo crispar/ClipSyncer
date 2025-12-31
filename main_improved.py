@@ -180,9 +180,10 @@ class ClipboardHistoryApp:
                 logger.info("Initializing GitHub sync from github_settings.yaml...")
                 token = github_settings.get('token')
                 repository = github_settings.get('repository')
+                enterprise_url = github_settings.get('enterprise_url')
 
                 if token and repository:
-                    self.github_sync = GitHubSyncService(token, repository)
+                    self.github_sync = GitHubSyncService(token, repository, enterprise_url)
                     logger.info(f"GitHub sync initialized for repository: {repository}")
 
                     # Initialize auto sync if configured
@@ -202,9 +203,10 @@ class ClipboardHistoryApp:
                 logger.info("Initializing GitHub sync from main config...")
                 token = self.config_manager.get('github.token')
                 repository = self.config_manager.get('github.repository')
+                enterprise_url = self.config_manager.get('github.enterprise_url')
 
                 if token and repository:
-                    self.github_sync = GitHubSyncService(token, repository)
+                    self.github_sync = GitHubSyncService(token, repository, enterprise_url)
                     logger.info(f"GitHub sync initialized for repository: {repository}")
 
                     # Initialize auto sync with default settings

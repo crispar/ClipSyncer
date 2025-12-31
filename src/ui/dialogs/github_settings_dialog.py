@@ -149,6 +149,21 @@ class GitHubSettingsDialog(QDialog):
 
         main_layout.addWidget(self.token_input)
 
+        # GitHub Enterprise URL field (optional)
+        enterprise_label = BodyLabel("GitHub Enterprise URL (optional):")
+        main_layout.addWidget(enterprise_label)
+
+        self.enterprise_input = LineEdit()
+        self.enterprise_input.setPlaceholderText("e.g., https://github.sec.samsung.net")
+        self.enterprise_input.setText(self.current_settings.get('enterprise_url', ''))
+        main_layout.addWidget(self.enterprise_input)
+
+        enterprise_help = CaptionLabel(
+            "Leave empty for GitHub.com, or enter your GitHub Enterprise URL"
+        )
+        enterprise_help.setWordWrap(True)
+        main_layout.addWidget(enterprise_help)
+
         # Sync Password field (for multi-device encryption)
         sync_password_label = BodyLabel("Sync Password (for multi-device encryption):")
         main_layout.addWidget(sync_password_label)
@@ -241,8 +256,9 @@ class GitHubSettingsDialog(QDialog):
             # Import GitHub sync service
             from src.services.sync.github_sync import GitHubSyncService
 
-            # Test connection
-            sync_service = GitHubSyncService(token, repo)
+            # Test connection with enterprise URL if provided
+            enterprise_url = self.enterprise_input.text().strip() or None
+            sync_service = GitHubSyncService(token, repo, enterprise_url)
 
             if sync_service.test_connection():
                 state_tooltip.setContent("Connection successful!")
@@ -292,6 +308,7 @@ class GitHubSettingsDialog(QDialog):
         """Save GitHub settings"""
         repo = self.repo_input.text().strip()
         token = self.token_input.text().strip()
+        enterprise_url = self.enterprise_input.text().strip() or None
         sync_password = self.sync_password_input.text()
 
         try:
@@ -347,6 +364,7 @@ class GitHubSettingsDialog(QDialog):
             'github': {
                 'repository': repo,
                 'token': token,
+                'enterprise_url': enterprise_url,
                 'auto_sync_interval_minutes': auto_sync,
                 'auto_sync_enabled': auto_sync > 0,
                 'enabled': True
