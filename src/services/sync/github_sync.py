@@ -56,7 +56,7 @@ class GitHubSyncService:
                 # For GitHub Enterprise, we need to append /api/v3 to the base URL
                 api_url = f"{self.enterprise_url.rstrip('/')}/api/v3"
                 logger.info(f"Connecting to GitHub Enterprise at: {api_url}")
-                self.github = Github(base_url=api_url, auth=Github.Auth.Token(self.token))
+                self.github = Github(base_url=api_url, login_or_token=self.token)
             else:
                 # Regular GitHub.com
                 self.github = Github(self.token)
