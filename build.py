@@ -109,7 +109,8 @@ def build_executable():
             print("  Build successful!")
 
             # Check if exe was created
-            exe_path = Path('dist/ClipSyncer.exe')
+            exe_name = 'ClipSyncer.exe' if os.name == 'nt' else 'ClipSyncer'
+            exe_path = Path('dist') / exe_name
             if exe_path.exists():
                 size_mb = exe_path.stat().st_size / (1024 * 1024)
                 print(f"  Executable created: {exe_path}")

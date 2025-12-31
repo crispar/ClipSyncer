@@ -12,22 +12,23 @@ datas = []
 binaries = []
 hiddenimports = []
 
-# Collect qfluentwidgets completely
+# Collect qfluentwidgets selectively (removed collect_all to save space)
 try:
-    qfw_datas, qfw_binaries, qfw_hiddenimports = collect_all('qfluentwidgets')
+    # Only collect data files (icons, qss), not all binaries
+    qfw_datas = collect_data_files('qfluentwidgets')
     datas += qfw_datas
-    binaries += qfw_binaries
-    hiddenimports += qfw_hiddenimports
 except:
     pass
 
-# Also explicitly collect qfluentwidgets submodules
-hiddenimports += collect_submodules('qfluentwidgets')
+# Explicitly collect qfluentwidgets submodules
+# hiddenimports += collect_submodules('qfluentwidgets') # Let PyInstaller find them or add manually if needed
 
 # Only collect PyQt6 data files (icons, translations), not all modules
 try:
-    pyqt6_datas = collect_data_files('PyQt6')
-    datas += pyqt6_datas
+    # Only collect translation files for English, skipping others to save space
+    # pyqt6_datas = collect_data_files('PyQt6')
+    # datas += pyqt6_datas
+    pass
 except:
     pass
 
@@ -45,7 +46,6 @@ if os.path.exists('assets/icon.ico'):
 # Additional hidden imports - comprehensive list
 hiddenimports += [
     # Core PyQt6 modules
-    'PyQt6',
     'PyQt6.QtCore',
     'PyQt6.QtGui',
     'PyQt6.QtWidgets',
@@ -57,39 +57,38 @@ hiddenimports += [
     'qfluentwidgets.common',
     'qfluentwidgets.components',
     'qfluentwidgets.window',
-    'qfluentwidgets.multimedia',
+    # 'qfluentwidgets.multimedia', # Exclude multimedia to save space
     'qfluentwidgets._rc',
 
     # Database
     'sqlalchemy',
     'sqlalchemy.orm',
-    'sqlalchemy.ext.declarative',
-    'sqlalchemy.sql.default_comparator',
-    'sqlalchemy.ext.baked',
+    # 'sqlalchemy.ext.declarative', # Deprecated/merged in 1.4+
+    # 'sqlalchemy.sql.default_comparator',
+    # 'sqlalchemy.ext.baked',
 
     # Encryption
     'cryptography',
-    'cryptography.hazmat',
-    'cryptography.hazmat.primitives',
-    'cryptography.hazmat.primitives.kdf',
-    'cryptography.hazmat.primitives.kdf.pbkdf2',
-    'cryptography.hazmat.primitives.ciphers',
-    'cryptography.hazmat.primitives.ciphers.aead',
-    'cryptography.hazmat.backends',
+    # 'cryptography.hazmat', # Included by cryptography
 
-    # Windows integration
+    # Windows integration (Conditional)
     'keyring',
-    'keyring.backends',
-    'keyring.backends.Windows',
-    'win32com',
-    'win32com.client',
-    'win32api',
-    'win32clipboard',
-    'pywintypes',
+]
 
+if os.name == 'nt':
+    hiddenimports += [
+        'keyring.backends.Windows',
+        'win32com',
+        'win32com.client',
+        'win32api',
+        'win32clipboard',
+        'pywintypes',
+        'pystray._win32',
+    ]
+
+hiddenimports += [
     # System tray
     'pystray',
-    'pystray._win32',
 
     # Images
     'PIL',
@@ -104,7 +103,7 @@ hiddenimports += [
 
     # Scheduling
     'apscheduler',
-    'apscheduler.schedulers',
+    # 'apscheduler.schedulers',
     'apscheduler.schedulers.background',
 
     # Config
@@ -192,6 +191,16 @@ a = Analysis(
         'PyQt6.Qt3DInput',
         'PyQt6.Qt3DLogic',
         'PyQt6.Qt3DRender',
+        'PyQt6.QtCharts',
+        'PyQt6.QtDataVisualization',
+        'PyQt6.QtPdf',
+        'PyQt6.QtPdfWidgets',
+        'curses',
+        'lib2to3',
+        'pydoc',
+        'xml.dom.domreg',
+        'xml.sax',
+        'xml.sax.handler',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
