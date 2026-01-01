@@ -260,8 +260,11 @@ class ModernHistoryViewer(QMainWindow):
             # Update count
             self.count_label.setText(f"{len(self.current_entries)} items")
 
-            # Update last entry count
-            self.last_entry_count = len(self.current_entries)
+            # Update last entry count (use actual DB count to match _check_for_updates)
+            if self.repository:
+                self.last_entry_count = self.repository.get_entry_count()
+            else:
+                self.last_entry_count = len(self.current_entries)
 
             # Show success notification only for manual refresh or initial load
             if not hasattr(self, '_initial_load_done'):
