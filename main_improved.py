@@ -634,39 +634,11 @@ class ClipboardHistoryApp:
             welcome_dialog = WelcomeDialog()
 
             def on_setup_completed(settings):
-                """Handle setup completion"""
+                """Handle setup completion - settings are already saved by the dialog"""
                 logger.info("GitHub setup completed via welcome dialog")
-                # Reload GitHub settings to pick up new configuration
-                self.github_sync = None
-                self.auto_sync = None
-
-                # Re-initialize GitHub sync with new settings
-                if settings and settings.get('enabled'):
-                    token = settings.get('token')
-                    repository = settings.get('repository')
-                    enterprise_url = settings.get('enterprise_url')
-
-                    if token and repository:
-                        from src.services import GitHubSyncService
-                        self.github_sync = GitHubSyncService(token, repository, enterprise_url)
-                        self.is_github_primary = settings.get('is_primary_storage', False)
-
-                        if self.is_github_primary:
-                            logger.info("GitHub configured as primary storage")
-                            self._initial_github_sync()
-
-                        # Setup auto sync
-                        auto_sync_enabled = settings.get('auto_sync_enabled', True)
-                        if auto_sync_enabled:
-                            from src.services.auto_sync_service import AutoSyncService
-                            self.auto_sync = AutoSyncService()
-                            if self.is_github_primary:
-                                self.auto_sync.set_push_callback(self._immediate_sync_to_github)
-                            else:
-                                self.auto_sync.set_push_callback(self._auto_sync_to_github)
-                            self.auto_sync.set_pull_callback(self._pull_from_github)
-                            self.auto_sync.start()
-
+                # Settings (github_settings.yaml, sync password in keyring) are already saved
+                # by GitHubSettingsDialog. The initialize() method will read these settings
+                # and set up encryption with the correct key derived from sync password.
                 mark_first_run_complete()
 
             def on_setup_skipped():
@@ -690,8 +662,14 @@ class ClipboardHistoryApp:
             self.qt_app = QApplication(sys.argv)
             self.qt_app.setQuitOnLastWindowClosed(False)
 
-            # Check for first run and show welcome dialog if needed
+            # Check for first run and show welcome dialog BEFORE initialization
+            # This ensures sync password is set before encryption key is created
             self._check_and_show_first_run()
+
+            # Now initialize application with proper settings
+            if not self.initialize():
+                logger.error("Failed to initialize application")
+                sys.exit(1)
 
             # Create signal bridge
             self.signal_bridge = QtSignalBridge()
@@ -822,12 +800,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Initialize application
-    if not app.initialize():
-        logger.error("Failed to initialize application")
-        sys.exit(1)
-
-    # Start application
+    # Start application (initialization happens inside start() after first-run check)
     app.start()
 
 
