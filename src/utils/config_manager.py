@@ -228,6 +228,12 @@ class ConfigManager:
         """Get entire configuration"""
         return self.config.copy()
 
+    def reload(self):
+        """Reload configuration from file"""
+        self._load_defaults()
+        self._load_config()
+        logger.info("Configuration reloaded from file")
+
     def reset(self):
         """Reset to default configuration"""
         self._load_defaults()

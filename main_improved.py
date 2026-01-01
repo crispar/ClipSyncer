@@ -336,7 +336,8 @@ class ClipboardHistoryApp:
             if not self.history_viewer:
                 self.history_viewer = HistoryViewer(
                     self.clipboard_history,
-                    self.repository
+                    self.repository,
+                    self.config_manager
                 )
 
             self.history_viewer.show()

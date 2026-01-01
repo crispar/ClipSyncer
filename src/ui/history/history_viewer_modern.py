@@ -19,7 +19,7 @@ from qfluentwidgets import (
     CardWidget, BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
     TransparentToolButton, PrimaryPushButton, ToggleButton,
     MessageBox, Dialog, StateToolTip, setThemeColor,
-    FluentStyleSheet, qconfig
+    FluentStyleSheet, qconfig, RoundMenu, Action
 )
 from loguru import logger
 
@@ -27,17 +27,19 @@ from loguru import logger
 class ModernHistoryViewer(QMainWindow):
     """Modern history viewer window with Windows 11 Fluent Design"""
 
-    def __init__(self, clipboard_history=None, repository=None):
+    def __init__(self, clipboard_history=None, repository=None, config_manager=None):
         """
         Initialize history viewer
 
         Args:
             clipboard_history: ClipboardHistory instance
             repository: ClipboardRepository instance
+            config_manager: ConfigManager instance for settings reload
         """
         super().__init__()
         self.clipboard_history = clipboard_history
         self.repository = repository
+        self.config_manager = config_manager
         self.current_entries = []
         self.last_entry_count = 0
 
@@ -640,7 +642,53 @@ class ModernHistoryViewer(QMainWindow):
                 stateTooltip.hide()
 
     def _show_settings(self):
-        """Show settings dialog"""
+        """Show settings menu"""
+        menu = RoundMenu(parent=self)
+
+        # App Settings action
+        app_settings_action = Action(FIF.SETTING, "App Settings")
+        app_settings_action.triggered.connect(self._show_app_settings)
+        menu.addAction(app_settings_action)
+
+        # GitHub Settings action
+        github_settings_action = Action(FIF.GITHUB, "GitHub Sync Settings")
+        github_settings_action.triggered.connect(self._show_github_settings)
+        menu.addAction(github_settings_action)
+
+        # Show menu at button position
+        menu.exec(self.settings_btn.mapToGlobal(self.settings_btn.rect().bottomLeft()))
+
+    def _show_app_settings(self):
+        """Show app settings dialog"""
+        try:
+            from src.ui.dialogs.app_settings_dialog import AppSettingsDialog
+
+            dialog = AppSettingsDialog(self)
+            dialog.settings_saved.connect(self._on_app_settings_saved)
+            dialog.exec()
+
+        except Exception as e:
+            logger.error(f"Failed to show app settings dialog: {e}")
+            InfoBar.error(
+                title="Error",
+                content=f"Failed to open app settings: {str(e)}",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=5000,
+                parent=self
+            )
+
+    def _on_app_settings_saved(self, settings):
+        """Handle app settings being saved"""
+        logger.info("App settings saved")
+        # Reload config to apply changes immediately
+        if self.config_manager:
+            self.config_manager.reload()
+            logger.info("Config reloaded after app settings change")
+
+    def _show_github_settings(self):
+        """Show GitHub settings dialog"""
         try:
             from src.ui.dialogs import GitHubSettingsDialog
 
