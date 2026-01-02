@@ -2,6 +2,7 @@
 
 import json
 import base64
+import requests
 from typing import Optional, Dict, Any, List, Set, Tuple
 from datetime import datetime
 from github import Github, GithubException
@@ -200,13 +201,39 @@ class GitHubSyncService:
             filepath = "backups/clipboard_sync.json"
             file_content = self.repo.get_contents(filepath)
 
-            # Decode content
-            content = base64.b64decode(file_content.content).decode('utf-8')
+            # Handle large files (>1MB) - GitHub returns encoding: none
+            if file_content.encoding is None or file_content.encoding == 'none':
+                # Use download_url for large files
+                logger.debug(f"Large file detected ({file_content.size} bytes), using download_url")
+                headers = {'Authorization': f'token {self.token}'}
+                response = requests.get(file_content.download_url, headers=headers, timeout=30)
+                response.raise_for_status()
+                content = response.text
+            else:
+                # Use decoded_content for smaller files
+                content = file_content.decoded_content.decode('utf-8')
+
+            if not content or not content.strip():
+                logger.warning(f"Backup file is empty: {filepath}")
+                return None
+
             data = json.loads(content)
 
-            logger.info(f"Downloaded backup: {filepath}")
+            logger.info(f"Downloaded backup: {filepath} ({len(data.get('entries', []))} entries)")
             return data
 
+        except GithubException as e:
+            if e.status == 404:
+                logger.debug(f"Backup file not found: backups/clipboard_sync.json")
+            else:
+                logger.error(f"GitHub API error: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in backup file: {e}")
+            return None
+        except requests.RequestException as e:
+            logger.error(f"Failed to download large file: {e}")
+            return None
         except Exception as e:
             logger.error(f"Failed to download backup: {e}")
             return None
