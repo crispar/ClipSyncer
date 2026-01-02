@@ -248,10 +248,10 @@ class ModernHistoryViewer(QMainWindow):
 
             if self.repository:
                 # Load from database
-                self.current_entries = self.repository.get_entries(limit=100)
+                self.current_entries = self.repository.get_entries(limit=500)
             elif self.clipboard_history:
                 # Load from memory
-                self.current_entries = self.clipboard_history.get_entries(limit=100)
+                self.current_entries = self.clipboard_history.get_entries(limit=500)
             else:
                 self.current_entries = []
 
