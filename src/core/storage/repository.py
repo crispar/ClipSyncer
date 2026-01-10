@@ -1,29 +1,42 @@
-"""Repository pattern for clipboard data access"""
+"""Improved repository pattern with better session management"""
 
 import json
 from typing import List, Optional, Dict, Any
-from datetime import datetime
-from sqlalchemy.orm import Session
+from datetime import datetime, timedelta
+from contextlib import contextmanager
 from loguru import logger
 
-from .database import ClipboardEntryDB, SettingsDB
+from .database import ClipboardEntryDB, SettingsDB, DatabaseManager
 from ..clipboard.history import ClipboardEntry
 from ..encryption.manager import EncryptionManager
 
 
 class ClipboardRepository:
-    """Repository for clipboard data operations"""
+    """Repository for clipboard data operations with improved session management"""
 
-    def __init__(self, session: Session, encryption_manager: EncryptionManager):
+    def __init__(self, database_manager: DatabaseManager, encryption_manager: EncryptionManager):
         """
         Initialize repository
 
         Args:
-            session: Database session
+            database_manager: DatabaseManager instance
             encryption_manager: Encryption manager instance
         """
-        self.session = session
+        self.db_manager = database_manager
         self.encryption = encryption_manager
+
+    @contextmanager
+    def get_session(self):
+        """Get a new database session with proper cleanup"""
+        session = self.db_manager.get_session()
+        try:
+            yield session
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     def save_entry(self, entry: ClipboardEntry) -> bool:
         """
@@ -36,37 +49,38 @@ class ClipboardRepository:
             True if successful
         """
         try:
-            # Encrypt content
-            encrypted_data = self.encryption.encrypt(entry.content)
+            with self.get_session() as session:
+                # Encrypt content
+                encrypted_data = self.encryption.encrypt(entry.content)
 
-            # Check if entry exists
-            existing = self.session.query(ClipboardEntryDB).filter_by(
-                content_hash=entry.content_hash
-            ).first()
+                # Check if entry exists
+                existing = session.query(ClipboardEntryDB).filter_by(
+                    content_hash=entry.content_hash
+                ).first()
 
-            if existing:
-                # Update timestamp
-                existing.timestamp = entry.timestamp
-                logger.debug(f"Updated existing entry: {entry.content_hash[:8]}")
-            else:
-                # Create new entry
-                db_entry = ClipboardEntryDB(
-                    content_hash=entry.content_hash,
-                    encrypted_content=encrypted_data['ciphertext'],
-                    encrypted_nonce=encrypted_data['nonce'],
-                    encrypted_tag=encrypted_data['tag'],
-                    timestamp=entry.timestamp,
-                    category=entry.category,
-                    entry_metadata=json.dumps(entry.metadata) if entry.metadata else None
-                )
-                self.session.add(db_entry)
-                logger.debug(f"Saved new entry: {entry.content_hash[:8]}")
+                if existing:
+                    # Update timestamp
+                    existing.timestamp = entry.timestamp
+                    logger.debug(f"Updated existing entry: {entry.content_hash[:8]}")
+                else:
+                    # Create new entry
+                    db_entry = ClipboardEntryDB(
+                        content_hash=entry.content_hash,
+                        encrypted_content=encrypted_data['ciphertext'],
+                        encrypted_nonce=encrypted_data['nonce'],
+                        encrypted_tag=encrypted_data['tag'],
+                        timestamp=entry.timestamp,
+                        category=entry.category,
+                        entry_metadata=json.dumps(entry.metadata) if entry.metadata else None
+                    )
+                    session.add(db_entry)
+                    # Handle both string and int hash types
+                    hash_str = str(entry.content_hash)[:8] if entry.content_hash else "unknown"
+                    logger.debug(f"Saved new entry: {hash_str}")
 
-            self.session.commit()
-            return True
+                return True
 
         except Exception as e:
-            self.session.rollback()
             logger.error(f"Failed to save entry: {e}")
             return False
 
@@ -81,57 +95,45 @@ class ClipboardRepository:
             List of clipboard entries
         """
         try:
-            query = self.session.query(ClipboardEntryDB).order_by(
-                ClipboardEntryDB.timestamp.desc()
-            )
+            with self.get_session() as session:
+                query = session.query(ClipboardEntryDB).order_by(
+                    ClipboardEntryDB.timestamp.desc()
+                )
 
-            if limit:
-                query = query.limit(limit)
+                if limit:
+                    query = query.limit(limit)
 
-            db_entries = query.all()
-            entries = []
+                db_entries = query.all()
+                entries = []
 
-            for db_entry in db_entries:
-                try:
-                    # Decrypt content
-                    encrypted_data = {
-                        'ciphertext': db_entry.encrypted_content,
-                        'nonce': db_entry.encrypted_nonce,
-                        'tag': db_entry.encrypted_tag
-                    }
-                    content = self.encryption.decrypt(encrypted_data)
+                for db_entry in db_entries:
+                    try:
+                        # Decrypt content
+                        encrypted_data = {
+                            'ciphertext': db_entry.encrypted_content,
+                            'nonce': db_entry.encrypted_nonce,
+                            'tag': db_entry.encrypted_tag
+                        }
+                        content = self.encryption.decrypt(encrypted_data)
 
-                    # Create clipboard entry
-                    entry = ClipboardEntry(
-                        content=content,
-                        timestamp=db_entry.timestamp,
-                        content_hash=db_entry.content_hash,
-                        category=db_entry.category,
-                        metadata=json.loads(db_entry.entry_metadata) if db_entry.entry_metadata else {}
-                    )
-                    entries.append(entry)
+                        # Create clipboard entry
+                        entry = ClipboardEntry(
+                            content=content,
+                            timestamp=db_entry.timestamp,
+                            content_hash=db_entry.content_hash,
+                            category=db_entry.category,
+                            metadata=json.loads(db_entry.entry_metadata) if db_entry.entry_metadata else {}
+                        )
+                        entries.append(entry)
 
-                except Exception as e:
-                    logger.error(f"Failed to decrypt entry {db_entry.id}: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt entry {db_entry.id}: {e}")
 
-            return entries
+                return entries
 
         except Exception as e:
             logger.error(f"Failed to get entries: {e}")
             return []
-
-    def get_entry_count(self) -> int:
-        """
-        Get total number of entries in the database
-
-        Returns:
-            Number of entries
-        """
-        try:
-            return self.session.query(ClipboardEntryDB).count()
-        except Exception as e:
-            logger.error(f"Failed to get entry count: {e}")
-            return 0
 
     def delete_entry(self, content_hash: str) -> bool:
         """
@@ -144,20 +146,19 @@ class ClipboardRepository:
             True if successful
         """
         try:
-            entry = self.session.query(ClipboardEntryDB).filter_by(
-                content_hash=content_hash
-            ).first()
+            with self.get_session() as session:
+                entry = session.query(ClipboardEntryDB).filter_by(
+                    content_hash=content_hash
+                ).first()
 
-            if entry:
-                self.session.delete(entry)
-                self.session.commit()
-                logger.debug(f"Deleted entry: {content_hash[:8]}")
-                return True
+                if entry:
+                    session.delete(entry)
+                    logger.debug(f"Deleted entry: {content_hash[:8]}")
+                    return True
 
-            return False
+                return False
 
         except Exception as e:
-            self.session.rollback()
             logger.error(f"Failed to delete entry: {e}")
             return False
 
@@ -172,22 +173,17 @@ class ClipboardRepository:
             Number of entries deleted
         """
         try:
-            from datetime import timedelta
-            cutoff = datetime.now() - timedelta(days=days)
+            with self.get_session() as session:
+                cutoff = datetime.now() - timedelta(days=days)
 
-            deleted = self.session.query(ClipboardEntryDB).filter(
-                ClipboardEntryDB.timestamp < cutoff
-            ).delete()
+                deleted = session.query(ClipboardEntryDB).filter(
+                    ClipboardEntryDB.timestamp < cutoff
+                ).delete()
 
-            self.session.commit()
-            logger.info(f"Deleted {deleted} old entries")
-            return deleted
+                logger.info(f"Deleted {deleted} old entries")
+                return deleted
 
         except Exception as e:
-            try:
-                self.session.rollback()
-            except:
-                pass  # Rollback may fail if already committed
             logger.error(f"Failed to cleanup old entries: {e}")
             return 0
 
@@ -199,33 +195,34 @@ class ClipboardRepository:
             List of favorite entries
         """
         try:
-            db_entries = self.session.query(ClipboardEntryDB).filter_by(
-                is_favorite=True
-            ).order_by(ClipboardEntryDB.timestamp.desc()).all()
+            with self.get_session() as session:
+                db_entries = session.query(ClipboardEntryDB).filter_by(
+                    is_favorite=True
+                ).order_by(ClipboardEntryDB.timestamp.desc()).all()
 
-            entries = []
-            for db_entry in db_entries:
-                try:
-                    encrypted_data = {
-                        'ciphertext': db_entry.encrypted_content,
-                        'nonce': db_entry.encrypted_nonce,
-                        'tag': db_entry.encrypted_tag
-                    }
-                    content = self.encryption.decrypt(encrypted_data)
+                entries = []
+                for db_entry in db_entries:
+                    try:
+                        encrypted_data = {
+                            'ciphertext': db_entry.encrypted_content,
+                            'nonce': db_entry.encrypted_nonce,
+                            'tag': db_entry.encrypted_tag
+                        }
+                        content = self.encryption.decrypt(encrypted_data)
 
-                    entry = ClipboardEntry(
-                        content=content,
-                        timestamp=db_entry.timestamp,
-                        content_hash=db_entry.content_hash,
-                        category=db_entry.category,
-                        metadata=json.loads(db_entry.entry_metadata) if db_entry.entry_metadata else {}
-                    )
-                    entries.append(entry)
+                        entry = ClipboardEntry(
+                            content=content,
+                            timestamp=db_entry.timestamp,
+                            content_hash=db_entry.content_hash,
+                            category=db_entry.category,
+                            metadata=json.loads(db_entry.entry_metadata) if db_entry.entry_metadata else {}
+                        )
+                        entries.append(entry)
 
-                except Exception as e:
-                    logger.error(f"Failed to decrypt favorite entry {db_entry.id}: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt favorite entry {db_entry.id}: {e}")
 
-            return entries
+                return entries
 
         except Exception as e:
             logger.error(f"Failed to get favorites: {e}")
@@ -242,20 +239,19 @@ class ClipboardRepository:
             True if successful
         """
         try:
-            entry = self.session.query(ClipboardEntryDB).filter_by(
-                content_hash=content_hash
-            ).first()
+            with self.get_session() as session:
+                entry = session.query(ClipboardEntryDB).filter_by(
+                    content_hash=content_hash
+                ).first()
 
-            if entry:
-                entry.is_favorite = not entry.is_favorite
-                self.session.commit()
-                logger.debug(f"Toggled favorite: {content_hash[:8]} -> {entry.is_favorite}")
-                return True
+                if entry:
+                    entry.is_favorite = not entry.is_favorite
+                    logger.debug(f"Toggled favorite: {content_hash[:8]} -> {entry.is_favorite}")
+                    return True
 
-            return False
+                return False
 
         except Exception as e:
-            self.session.rollback()
             logger.error(f"Failed to toggle favorite: {e}")
             return False
 
@@ -271,25 +267,24 @@ class ClipboardRepository:
             True if successful
         """
         try:
-            setting = self.session.query(SettingsDB).filter_by(key=key).first()
+            with self.get_session() as session:
+                setting = session.query(SettingsDB).filter_by(key=key).first()
 
-            if setting:
-                setting.value = json.dumps(value)
-                setting.updated_at = datetime.now()
-            else:
-                setting = SettingsDB(
-                    key=key,
-                    value=json.dumps(value),
-                    updated_at=datetime.now()
-                )
-                self.session.add(setting)
+                if setting:
+                    setting.value = json.dumps(value)
+                    setting.updated_at = datetime.now()
+                else:
+                    setting = SettingsDB(
+                        key=key,
+                        value=json.dumps(value),
+                        updated_at=datetime.now()
+                    )
+                    session.add(setting)
 
-            self.session.commit()
-            logger.debug(f"Saved setting: {key}")
-            return True
+                logger.debug(f"Saved setting: {key}")
+                return True
 
         except Exception as e:
-            self.session.rollback()
             logger.error(f"Failed to save setting: {e}")
             return False
 
@@ -305,12 +300,13 @@ class ClipboardRepository:
             Setting value or default
         """
         try:
-            setting = self.session.query(SettingsDB).filter_by(key=key).first()
+            with self.get_session() as session:
+                setting = session.query(SettingsDB).filter_by(key=key).first()
 
-            if setting:
-                return json.loads(setting.value)
+                if setting:
+                    return json.loads(setting.value)
 
-            return default
+                return default
 
         except Exception as e:
             logger.error(f"Failed to get setting: {e}")
@@ -324,12 +320,27 @@ class ClipboardRepository:
             Dictionary of settings
         """
         try:
-            settings = self.session.query(SettingsDB).all()
-            return {s.key: json.loads(s.value) for s in settings}
+            with self.get_session() as session:
+                settings = session.query(SettingsDB).all()
+                return {s.key: json.loads(s.value) for s in settings}
 
         except Exception as e:
             logger.error(f"Failed to get all settings: {e}")
             return {}
+
+    def get_entry_count(self) -> int:
+        """
+        Get total number of entries in the database
+
+        Returns:
+            Number of entries
+        """
+        try:
+            with self.get_session() as session:
+                return session.query(ClipboardEntryDB).count()
+        except Exception as e:
+            logger.error(f"Failed to get entry count: {e}")
+            return 0
 
     def clear_all(self) -> bool:
         """
@@ -339,13 +350,13 @@ class ClipboardRepository:
             True if successful
         """
         try:
-            # Delete all clipboard entries
-            self.session.query(ClipboardEntryDB).delete()
-            self.session.commit()
-            logger.info("Cleared all clipboard entries from database")
-            return True
+            with self.get_session() as session:
+                # Delete all clipboard entries
+                session.query(ClipboardEntryDB).delete()
+                session.commit()
+                logger.info("Cleared all clipboard entries from database")
+                return True
 
         except Exception as e:
-            self.session.rollback()
             logger.error(f"Failed to clear clipboard entries: {e}")
             return False
