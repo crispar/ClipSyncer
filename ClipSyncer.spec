@@ -137,7 +137,7 @@ hiddenimports += [
 ]
 
 a = Analysis(
-    ['main_improved.py'],
+    ['main.py'],
     pathex=[os.getcwd()],  # Add current directory to path
     binaries=binaries,
     datas=datas,
