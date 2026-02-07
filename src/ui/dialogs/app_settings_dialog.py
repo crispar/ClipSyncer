@@ -1,11 +1,12 @@
 """App Settings Dialog for general application settings"""
 
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QDialog
+from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QDialog, QScrollArea
 from qfluentwidgets import (
     PushButton, PrimaryPushButton,
     BodyLabel, CaptionLabel, InfoBar, InfoBarPosition,
-    SwitchButton, isDarkTheme
+    SwitchButton, isDarkTheme, ComboBox, SpinBox,
+    SubtitleLabel
 )
 from loguru import logger
 import yaml
@@ -44,8 +45,8 @@ class AppSettingsDialog(QDialog):
         self._setup_ui()
 
         # Set window size
-        self.setFixedWidth(400)
-        self.setFixedHeight(250)
+        self.setFixedWidth(480)
+        self.setMinimumHeight(420)
 
     def _apply_theme_style(self):
         """Apply appropriate styling based on system theme"""
@@ -84,49 +85,134 @@ class AppSettingsDialog(QDialog):
         # Return defaults
         return {
             'ui': {
-                'show_notifications': True
+                'show_notifications': True,
+                'theme': 'auto'
+            },
+            'clipboard': {
+                'check_interval': 500,
+                'max_history_size': 1000
+            },
+            'storage': {
+                'retention_days': 30
             }
         }
+
+    def _create_setting_row(self, label_text, desc_text, widget):
+        """Helper to create a consistent setting row"""
+        section = QWidget()
+        section_layout = QHBoxLayout(section)
+        section_layout.setContentsMargins(0, 6, 0, 6)
+
+        label_container = QWidget()
+        label_layout = QVBoxLayout(label_container)
+        label_layout.setContentsMargins(0, 0, 0, 0)
+        label_layout.setSpacing(2)
+
+        label = BodyLabel(label_text)
+        desc = CaptionLabel(desc_text)
+        desc_color = "#aaaaaa" if self._is_dark_theme else "#888888"
+        desc.setStyleSheet(f"color: {desc_color};")
+
+        label_layout.addWidget(label)
+        label_layout.addWidget(desc)
+
+        section_layout.addWidget(label_container)
+        section_layout.addStretch()
+        section_layout.addWidget(widget)
+
+        return section
 
     def _setup_ui(self):
         """Setup the dialog UI"""
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
         layout.setContentsMargins(24, 24, 24, 24)
 
         # Title
-        title_label = BodyLabel("App Settings")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        title_label = SubtitleLabel("App Settings")
         layout.addWidget(title_label)
 
-        # Notifications section
-        notifications_section = QWidget()
-        notifications_layout = QHBoxLayout(notifications_section)
-        notifications_layout.setContentsMargins(0, 8, 0, 8)
+        # --- UI Section ---
+        ui_header = BodyLabel("User Interface")
+        ui_header.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        layout.addWidget(ui_header)
 
-        notifications_label_container = QWidget()
-        notifications_label_layout = QVBoxLayout(notifications_label_container)
-        notifications_label_layout.setContentsMargins(0, 0, 0, 0)
-        notifications_label_layout.setSpacing(2)
-
-        notifications_label = BodyLabel("Show Notifications")
-        notifications_desc = CaptionLabel("Show popup when clipboard content is captured")
-        desc_color = "#aaaaaa" if self._is_dark_theme else "#888888"
-        notifications_desc.setStyleSheet(f"color: {desc_color};")
-
-        notifications_label_layout.addWidget(notifications_label)
-        notifications_label_layout.addWidget(notifications_desc)
-
+        # Notifications toggle
         self.notifications_switch = SwitchButton()
         self.notifications_switch.setChecked(
             self.current_settings.get('ui', {}).get('show_notifications', True)
         )
+        layout.addWidget(self._create_setting_row(
+            "Show Notifications",
+            "Show popup when clipboard content is captured",
+            self.notifications_switch
+        ))
 
-        notifications_layout.addWidget(notifications_label_container)
-        notifications_layout.addStretch()
-        notifications_layout.addWidget(self.notifications_switch)
+        # Theme selector
+        self.theme_combo = ComboBox()
+        self.theme_combo.addItems(["Auto", "Light", "Dark"])
+        current_theme = self.current_settings.get('ui', {}).get('theme', 'auto')
+        theme_map = {'auto': 0, 'light': 1, 'dark': 2}
+        self.theme_combo.setCurrentIndex(theme_map.get(current_theme, 0))
+        self.theme_combo.setFixedWidth(120)
+        layout.addWidget(self._create_setting_row(
+            "Theme",
+            "Application color theme",
+            self.theme_combo
+        ))
 
-        layout.addWidget(notifications_section)
+        # --- Clipboard Section ---
+        clip_header = BodyLabel("Clipboard")
+        clip_header.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        layout.addWidget(clip_header)
+
+        # Check interval
+        self.interval_spin = SpinBox()
+        self.interval_spin.setRange(200, 5000)
+        self.interval_spin.setSingleStep(100)
+        self.interval_spin.setSuffix(" ms")
+        self.interval_spin.setValue(
+            self.current_settings.get('clipboard', {}).get('check_interval', 500)
+        )
+        self.interval_spin.setFixedWidth(140)
+        layout.addWidget(self._create_setting_row(
+            "Check Interval",
+            "How often to check clipboard for changes",
+            self.interval_spin
+        ))
+
+        # Max history size
+        self.history_size_spin = SpinBox()
+        self.history_size_spin.setRange(50, 10000)
+        self.history_size_spin.setSingleStep(100)
+        self.history_size_spin.setValue(
+            self.current_settings.get('clipboard', {}).get('max_history_size', 1000)
+        )
+        self.history_size_spin.setFixedWidth(140)
+        layout.addWidget(self._create_setting_row(
+            "Max History Size",
+            "Maximum number of entries to keep",
+            self.history_size_spin
+        ))
+
+        # --- Storage Section ---
+        storage_header = BodyLabel("Storage")
+        storage_header.setStyleSheet("font-weight: bold; margin-top: 8px;")
+        layout.addWidget(storage_header)
+
+        # Retention days
+        self.retention_spin = SpinBox()
+        self.retention_spin.setRange(1, 365)
+        self.retention_spin.setSuffix(" days")
+        self.retention_spin.setValue(
+            self.current_settings.get('storage', {}).get('retention_days', 30)
+        )
+        self.retention_spin.setFixedWidth(140)
+        layout.addWidget(self._create_setting_row(
+            "Retention Period",
+            "Days to keep clipboard history before cleanup",
+            self.retention_spin
+        ))
 
         # Add stretch to push buttons to bottom
         layout.addStretch()
@@ -159,32 +245,40 @@ class AppSettingsDialog(QDialog):
             # Update UI settings
             if 'ui' not in settings:
                 settings['ui'] = {}
-
             settings['ui']['show_notifications'] = self.notifications_switch.isChecked()
+            theme_map = {0: 'auto', 1: 'light', 2: 'dark'}
+            settings['ui']['theme'] = theme_map.get(self.theme_combo.currentIndex(), 'auto')
+
+            # Update clipboard settings
+            if 'clipboard' not in settings:
+                settings['clipboard'] = {}
+            settings['clipboard']['check_interval'] = self.interval_spin.value()
+            settings['clipboard']['max_history_size'] = self.history_size_spin.value()
+
+            # Update storage settings
+            if 'storage' not in settings:
+                settings['storage'] = {}
+            settings['storage']['retention_days'] = self.retention_spin.value()
+
+            # Strip sensitive data before saving
+            safe_settings = settings.copy()
+            if 'github' in safe_settings:
+                safe_settings['github'] = {
+                    k: v for k, v in safe_settings['github'].items() if k != 'token'
+                }
 
             # Save to file
             os.makedirs(os.path.dirname(self._config_path), exist_ok=True)
             with open(self._config_path, 'w', encoding='utf-8') as f:
-                yaml.dump(settings, f, default_flow_style=False)
+                yaml.dump(safe_settings, f, default_flow_style=False)
 
-            logger.info(f"App settings saved: show_notifications={settings['ui']['show_notifications']}")
-
-            # Show success message
-            InfoBar.success(
-                title="Saved",
-                content="Settings saved successfully",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=2000,
-                parent=self
-            )
+            logger.info(f"App settings saved")
 
             # Emit signal with updated settings
             self.settings_saved.emit(settings)
 
-            # Close dialog after short delay
-            QTimer.singleShot(500, self.accept)
+            # Close dialog
+            self.accept()
 
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")

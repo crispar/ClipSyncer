@@ -147,9 +147,10 @@ credentials.json
 *.key
 *.pem
 
-# Test files
-test_*.py
-tests/
+# Test output files (allow test source files to be committed)
+.pytest_cache/
+htmlcov/
+.coverage
 
 # Temporary files
 *.tmp

@@ -73,6 +73,7 @@ class AutoSyncService:
 
     def _execute_push(self):
         """Execute push sync if conditions are met"""
+        callback = None
         with self._lock:
             if not self.enabled or not self._push_callback:
                 return
@@ -93,12 +94,17 @@ class AutoSyncService:
                 self._debounce_timer.start()
                 return
 
-            # Execute push
+            callback = self._push_callback
+            pending = self._pending_changes
+
+        # Execute push OUTSIDE the lock to avoid blocking other operations
+        if callback:
             try:
-                logger.info(f"Executing push sync ({self._pending_changes} changes)")
-                self._push_callback()
-                self._last_push = datetime.now()
-                self._pending_changes = 0
+                logger.info(f"Executing push sync ({pending} changes)")
+                callback()
+                with self._lock:
+                    self._last_push = datetime.now()
+                    self._pending_changes = 0
                 logger.info("Push sync completed")
             except Exception as e:
                 logger.error(f"Push sync failed: {e}")

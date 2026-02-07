@@ -2,7 +2,7 @@
 
 import threading
 from typing import Optional, Callable
-from datetime import datetime, timedelta
+from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger

@@ -5,7 +5,7 @@ from typing import Optional, Callable, List, Tuple
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QFont
 from PyQt6.QtCore import QTimer, QObject, pyqtSignal
-from qfluentwidgets import Theme, isDarkTheme
+from qfluentwidgets import isDarkTheme
 from loguru import logger
 
 

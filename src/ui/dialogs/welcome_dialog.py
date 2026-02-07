@@ -73,7 +73,8 @@ class WelcomeDialog(QDialog):
         # Subtitle
         subtitle = BodyLabel("Secure Clipboard History with GitHub Sync")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet("font-size: 16px; color: #666666;")
+        subtitle_color = "#aaaaaa" if isDarkTheme() else "#666666"
+        subtitle.setStyleSheet(f"font-size: 16px; color: {subtitle_color};")
         main_layout.addWidget(subtitle)
 
         # Add spacing
@@ -88,7 +89,7 @@ class WelcomeDialog(QDialog):
             ("☁️", "GitHub as primary storage - access from anywhere"),
             ("🔄", "Automatic sync across all your devices"),
             ("📝", "Full clipboard history with search and categories"),
-            ("🏢", "Support for GitHub Enterprise (Samsung, etc.)")
+            ("🏢", "Support for GitHub Enterprise")
         ]
 
         for icon, text in features:
@@ -118,7 +119,8 @@ class WelcomeDialog(QDialog):
         )
         info_label.setWordWrap(True)
         info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info_label.setStyleSheet("color: #888888; margin: 10px 0;")
+        info_color = "#aaaaaa" if isDarkTheme() else "#888888"
+        info_label.setStyleSheet(f"color: {info_color}; margin: 10px 0;")
         main_layout.addWidget(info_label)
 
         # Button layout

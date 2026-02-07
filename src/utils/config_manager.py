@@ -137,6 +137,18 @@ class ConfigManager:
                             old_token = github_settings['token']
                             if key_manager.store_github_token(old_token):
                                 logger.info("Migrated GitHub token to secure keyring")
+                                # Remove token from YAML file after migration
+                                try:
+                                    github_config_path_str = str(github_config_path)
+                                    with open(github_config_path_str, 'r', encoding='utf-8') as gf:
+                                        gh_cfg = yaml.safe_load(gf) or {}
+                                    if 'github' in gh_cfg:
+                                        gh_cfg['github'].pop('token', None)
+                                    with open(github_config_path_str, 'w', encoding='utf-8') as gf:
+                                        yaml.dump(gh_cfg, gf, default_flow_style=False)
+                                    logger.info("Removed plaintext token from github_settings.yaml")
+                                except Exception as migrate_err:
+                                    logger.warning(f"Could not remove token from YAML: {migrate_err}")
                     except Exception as e:
                         logger.warning(f"Could not load GitHub token from keyring: {e}")
 
@@ -166,13 +178,19 @@ class ConfigManager:
                 base[key] = value
 
     def save(self):
-        """Save current configuration to file"""
+        """Save current configuration to file (strips sensitive data)"""
         try:
             # Create directory if needed
             os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
 
+            # Create a copy and strip sensitive fields before saving
+            import copy
+            safe_config = copy.deepcopy(self.config)
+            if 'github' in safe_config:
+                safe_config['github'].pop('token', None)
+
             with open(self.config_path, 'w', encoding='utf-8') as f:
-                yaml.dump(self.config, f, default_flow_style=False)
+                yaml.dump(safe_config, f, default_flow_style=False)
 
             logger.info(f"Configuration saved to {self.config_path}")
             return True

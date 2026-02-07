@@ -337,7 +337,10 @@ class ClipboardHistoryApp:
                 self.history_viewer = HistoryViewer(
                     self.clipboard_history,
                     self.repository,
-                    self.config_manager
+                    self.config_manager,
+                    github_sync=self.github_sync,
+                    encryption_manager=self.encryption_manager,
+                    on_github_settings_changed=self._reinitialize_github_sync
                 )
 
             self.history_viewer.show()
@@ -346,6 +349,39 @@ class ClipboardHistoryApp:
 
         except Exception as e:
             logger.error(f"Failed to show history viewer: {e}")
+
+    def _reinitialize_github_sync(self, settings):
+        """Reinitialize GitHub sync service with new settings (callback for UI)"""
+        # Reinitialize encryption manager with updated key
+        key_manager = KeyManager()
+        encryption_key = key_manager.get_or_create_key()
+        self.encryption_manager = EncryptionManager(encryption_key)
+        logger.info("Encryption manager reinitialized with updated key")
+
+        # Update GitHub sync service with new settings
+        self.github_sync = GitHubSyncService(
+            token=settings.get('token'),
+            repository=settings.get('repository'),
+            enterprise_url=settings.get('enterprise_url')
+        )
+        logger.info("GitHub sync service reinitialized")
+
+        # Reinitialize auto sync service if GitHub sync is enabled
+        if self.github_sync.enabled:
+            # Stop existing auto sync service if any
+            if self.auto_sync:
+                self.auto_sync.stop()
+
+            self.auto_sync = AutoSyncService()
+            self.auto_sync.set_push_callback(self._immediate_sync_to_github)
+            self.auto_sync.set_pull_callback(self._pull_from_github)
+            self.auto_sync.start()
+            logger.info("Auto sync service reinitialized")
+
+        # Update history viewer references
+        if self.history_viewer:
+            self.history_viewer.github_sync = self.github_sync
+            self.history_viewer.encryption_manager = self.encryption_manager
 
     def _toggle_monitoring(self):
         """Toggle clipboard monitoring on/off (runs in main thread)"""
@@ -569,7 +605,7 @@ class ClipboardHistoryApp:
 
             # Refresh UI if viewer is open
             if self.history_viewer:
-                self.history_viewer.load_history()
+                self.history_viewer._load_entries()
 
         except Exception as e:
             logger.error(f"Pull from GitHub failed: {e}")
@@ -747,6 +783,14 @@ class ClipboardHistoryApp:
             # Stop monitoring
             if self.clipboard_monitor:
                 self.clipboard_monitor.stop()
+
+            # Final sync before shutdown (prevent data loss)
+            if hasattr(self, 'auto_sync') and self.auto_sync and self.auto_sync.pending_changes > 0:
+                logger.info("Performing final sync before shutdown...")
+                try:
+                    self.auto_sync.force_push()
+                except Exception as e:
+                    logger.error(f"Final sync failed: {e}")
 
             # Stop cleanup service
             if self.cleanup_service:

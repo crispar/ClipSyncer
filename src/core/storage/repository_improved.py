@@ -255,6 +255,26 @@ class ClipboardRepository:
             logger.error(f"Failed to toggle favorite: {e}")
             return False
 
+    def is_favorite(self, content_hash: str) -> bool:
+        """
+        Check if an entry is marked as favorite.
+
+        Args:
+            content_hash: Hash of entry to check
+
+        Returns:
+            True if entry is a favorite
+        """
+        try:
+            with self.get_session() as session:
+                entry = session.query(ClipboardEntryDB).filter_by(
+                    content_hash=content_hash
+                ).first()
+                return entry.is_favorite if entry else False
+        except Exception as e:
+            logger.error(f"Failed to check favorite status: {e}")
+            return False
+
     def save_setting(self, key: str, value: Any) -> bool:
         """
         Save application setting
@@ -353,7 +373,7 @@ class ClipboardRepository:
             with self.get_session() as session:
                 # Delete all clipboard entries
                 session.query(ClipboardEntryDB).delete()
-                session.commit()
+                # commit is handled by the context manager
                 logger.info("Cleared all clipboard entries from database")
                 return True
 

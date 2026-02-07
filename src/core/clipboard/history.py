@@ -4,7 +4,7 @@ import hashlib
 import threading
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 import json
 from loguru import logger
 
@@ -37,9 +37,12 @@ class ClipboardEntry:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ClipboardEntry':
-        """Create from dictionary"""
-        data['timestamp'] = datetime.fromisoformat(data['timestamp'])
-        return cls(**data)
+        """Create from dictionary (does not mutate input)"""
+        valid_fields = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        if 'timestamp' in filtered and isinstance(filtered['timestamp'], str):
+            filtered['timestamp'] = datetime.fromisoformat(filtered['timestamp'])
+        return cls(**filtered)
 
     def __eq__(self, other):
         if not isinstance(other, ClipboardEntry):
@@ -255,6 +258,24 @@ class ClipboardHistory:
                 del self._hash_index[removed.content_hash]
 
         logger.debug(f"Imported entry: {entry.content_hash[:8]}")
+        return True
+
+    def remove_entry(self, content_hash: str) -> bool:
+        """
+        Remove an entry by content hash.
+
+        Args:
+            content_hash: Hash of the entry to remove
+
+        Returns:
+            True if entry was removed, False if not found
+        """
+        with self._lock:
+            if content_hash not in self._hash_index:
+                return False
+            entry = self._hash_index.pop(content_hash)
+            self._entries.remove(entry)
+        logger.debug(f"Removed entry: {content_hash[:8]}")
         return True
 
     def has_entry(self, content_hash: str) -> bool:

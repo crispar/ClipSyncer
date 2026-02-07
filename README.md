@@ -1,115 +1,131 @@
-# ClipboardHistory
+# ClipSyncer
 
-A professional-grade clipboard history management application with encrypted cloud sync capabilities.
+A Windows clipboard history manager with encrypted GitHub sync, built with PyQt6 and Fluent Design.
 
 ## Features
 
-- **Real-time Clipboard Monitoring**: Automatically captures text copied to clipboard
-- **Smart Duplicate Detection**: Automatically removes duplicate entries
-- **Encrypted Storage**: All clipboard data is encrypted using industry-standard encryption
-- **GitHub Sync**: Optional synchronization with GitHub repository for backup
-- **System Tray Integration**: Runs silently in the background with easy access
-- **Rich History Viewer**: Browse and search through clipboard history
-- **Configurable Settings**: Customize retention period, encryption, and sync settings
+- **Real-time Clipboard Monitoring** - Automatically captures text copied to clipboard
+- **Smart Duplicate Detection** - Deduplicates entries via content hash (SHA-256)
+- **AES-256-GCM Encryption** - All clipboard data encrypted at rest and in transit
+- **GitHub Sync** - Bidirectional sync with GitHub (supports GitHub Enterprise)
+- **System Tray Integration** - Runs in background with Windows 11 Fluent Design tray icon
+- **Rich History Viewer** - Browse, search, filter, and manage clipboard history
+- **Keyboard Shortcuts** - Ctrl+C (copy), Ctrl+F (search), Delete, Escape, F5 (refresh)
+- **Archive Manager** - Automatically archives overflow entries with 7-day retention
+- **Configurable Settings** - Theme, check interval, max history, retention days
 
-## Architecture
+## Project Structure
 
 ```
-ClipboardHistory/
+ClipSyncer/
+├── main_improved.py          # Entry point (used by PyInstaller)
+├── build.py                  # Build script (PyInstaller + NSIS)
+├── ClipSyncer.spec           # PyInstaller spec file
+├── hook-qfluentwidgets.py    # PyInstaller hook for qfluentwidgets
+├── requirements.txt          # Python dependencies
+├── config/
+│   ├── default_settings.yaml     # Default configuration
+│   └── github_settings_example.yaml
+├── assets/
+│   └── icon.ico              # Application icon
 ├── src/
-│   ├── core/              # Core business logic
-│   │   ├── clipboard/      # Clipboard monitoring
-│   │   ├── encryption/     # Data encryption
-│   │   └── storage/        # Data persistence
-│   ├── services/           # Application services
-│   │   ├── sync/          # GitHub synchronization
-│   │   └── cleanup/       # Duplicate removal & cleanup
-│   ├── ui/                # User interface
-│   │   ├── tray/          # System tray
-│   │   ├── history/       # History viewer
-│   │   └── settings/      # Settings dialog
-│   └── utils/             # Utility functions
-├── tests/                 # Test suite
-├── config/               # Configuration files
-└── resources/            # Icons and assets
+│   ├── core/
+│   │   ├── clipboard/        # ClipboardMonitor, ClipboardHistory
+│   │   ├── encryption/       # EncryptionManager (AES-256-GCM), KeyManager
+│   │   └── storage/          # DatabaseManager (SQLite), ClipboardRepository
+│   ├── services/
+│   │   ├── sync/             # GitHubSyncService
+│   │   ├── cleanup/          # CleanupService, DuplicateRemover, OldDataCleaner
+│   │   ├── auto_sync_service.py  # Real-time push/pull sync
+│   │   └── archive_manager.py    # Overflow entry archival
+│   ├── ui/
+│   │   ├── tray/             # ModernTrayIcon (QSystemTrayIcon, Fluent Design)
+│   │   ├── history/          # ModernHistoryViewer (qfluentwidgets)
+│   │   └── dialogs/          # GitHub settings, welcome, app settings, restore
+│   └── utils/
+│       └── config_manager.py # YAML config loader
+└── tests/                    # Test suite (pytest)
 ```
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.8 or higher
+- Python 3.10+
 - Windows 10/11
-- Git (optional, for GitHub sync)
 
 ### Setup
 
-1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/ClipboardHistory.git
-cd ClipboardHistory
-```
+git clone <repository-url>
+cd ClipSyncer
 
-2. Create virtual environment:
-```bash
 python -m venv venv
 venv\Scripts\activate
-```
 
-3. Install dependencies:
-```bash
 pip install -r requirements.txt
 ```
 
-4. Run the application:
+### Run
+
 ```bash
-python main.py
+python main_improved.py
+```
+
+Or use the batch file:
+```bash
+run.bat
 ```
 
 ## Configuration
 
-Configuration is stored in `config/settings.yaml`:
+User configuration is stored at `%APPDATA%/ClipboardHistory/settings.yaml`.
+GitHub settings are stored separately at `%APPDATA%/ClipboardHistory/github_settings.yaml`.
+GitHub token and encryption keys are stored securely in Windows Credential Manager via `keyring`.
+
+### Default Settings
 
 ```yaml
 clipboard:
-  check_interval: 500  # milliseconds
+  check_interval: 500   # ms
   max_history_size: 1000
 
 encryption:
   enabled: true
   algorithm: AES-256-GCM
 
+storage:
+  retention_days: 30
+
 github:
   enabled: false
-  repository: ""
-  branch: "main"
+  repository: ""         # format: username/repo
 
 cleanup:
   duplicate_removal: true
   cleanup_interval: 3600  # seconds
+
+ui:
+  show_notifications: true
+  theme: light            # light or dark
 ```
 
 ## Building Executable
-
-To create a standalone executable:
 
 ```bash
 python build.py
 ```
 
-The executable will be created in the `dist/` directory.
+Output: `dist/ClipSyncer.exe`
 
 ## Security
 
-- All clipboard data is encrypted using AES-256-GCM
-- Encryption keys are stored securely using Windows Credential Manager
-- GitHub sync uses encrypted transport (HTTPS)
-- No clipboard data is ever transmitted without encryption
+- All clipboard data encrypted with AES-256-GCM before storage and sync
+- Encryption keys stored in Windows Credential Manager (not in config files)
+- PBKDF2-HMAC-SHA256 (600k iterations) for sync password key derivation
+- Same sync password on different devices produces the same encryption key
+- GitHub token stored in keyring, never written to YAML files
 
 ## License
 
-MIT License - See LICENSE file for details
-
-## Contributing
-
-Contributions are welcome! Please read CONTRIBUTING.md for guidelines.
+MIT License

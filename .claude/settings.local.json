@@ -8,7 +8,20 @@
       "Bash(powershell:*)",
       "Bash(python:*)",
       "Bash(dir nul* 2)",
-      "Bash(NUL)"
+      "Bash(NUL)",
+      "Bash(gh pr list:*)",
+      "Bash(call venvScriptsactivate.bat)",
+      "Bash(C:/Users/james/Downloads/codes/ClipSyncer/venv/Scripts/python.exe -m py_compile:*)",
+      "Bash(git rm:*)",
+      "Bash(for f in src/__init__.py src/core/__init__.py src/core/clipboard/__init__.py src/core/clipboard/monitor.py src/core/clipboard/history.py src/core/encryption/__init__.py src/core/encryption/manager.py src/core/encryption/key_manager.py src/core/storage/__init__.py src/core/storage/database.py src/core/storage/repository.py src/core/storage/repository_improved.py)",
+      "Bash(do venv/Scripts/python.exe:*)",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(for f in src/services/__init__.py src/services/cleanup/__init__.py src/services/cleanup/cleanup_service.py src/services/sync/__init__.py src/services/sync/github_sync.py src/services/auto_sync_service.py src/services/archive_manager.py)",
+      "Bash(for f in src/ui/__init__.py src/ui/history/__init__.py src/ui/history/history_viewer_modern.py src/ui/tray/__init__.py src/ui/tray/tray_icon.py src/ui/tray/tray_icon_fluent.py src/ui/dialogs/__init__.py src/ui/dialogs/github_settings_dialog.py src/ui/dialogs/restore_dialog.py src/ui/dialogs/welcome_dialog.py src/ui/dialogs/app_settings_dialog.py)",
+      "Bash(for:*)",
+      "Bash(venv/Scripts/python.exe:*)",
+      "Bash(\"./venv/Scripts/python.exe\" -m pytest tests/ -v --tb=short)"
     ],
     "deny": [],
     "ask": []

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QListWidgetItem, QLabel, QSplitter
 )
 from PyQt6.QtCore import Qt, QSize, QTimer
-from PyQt6.QtGui import QIcon, QFont
+from PyQt6.QtGui import QIcon, QFont, QShortcut, QKeySequence
 
 # Import Fluent Design components
 from qfluentwidgets import (
@@ -19,7 +19,7 @@ from qfluentwidgets import (
     CardWidget, BodyLabel, SubtitleLabel, TitleLabel, CaptionLabel,
     TransparentToolButton, PrimaryPushButton, ToggleButton,
     MessageBox, Dialog, StateToolTip, setThemeColor,
-    FluentStyleSheet, qconfig, RoundMenu, Action
+    FluentStyleSheet, RoundMenu, Action
 )
 from loguru import logger
 
@@ -27,7 +27,9 @@ from loguru import logger
 class ModernHistoryViewer(QMainWindow):
     """Modern history viewer window with Windows 11 Fluent Design"""
 
-    def __init__(self, clipboard_history=None, repository=None, config_manager=None):
+    def __init__(self, clipboard_history=None, repository=None, config_manager=None,
+                 github_sync=None, encryption_manager=None,
+                 on_github_settings_changed=None):
         """
         Initialize history viewer
 
@@ -35,11 +37,17 @@ class ModernHistoryViewer(QMainWindow):
             clipboard_history: ClipboardHistory instance
             repository: ClipboardRepository instance
             config_manager: ConfigManager instance for settings reload
+            github_sync: GitHubSyncService instance (for restore)
+            encryption_manager: EncryptionManager instance (for restore)
+            on_github_settings_changed: Callback(settings_dict) when GitHub settings change
         """
         super().__init__()
         self.clipboard_history = clipboard_history
         self.repository = repository
         self.config_manager = config_manager
+        self.github_sync = github_sync
+        self.encryption_manager = encryption_manager
+        self._on_github_settings_changed = on_github_settings_changed
         self.current_entries = []
         self.last_entry_count = 0
 
@@ -159,7 +167,7 @@ class ModernHistoryViewer(QMainWindow):
 
         # History list card
         list_card = CardWidget()
-        list_card.setFixedWidth(450)
+        list_card.setMinimumWidth(300)
         list_layout = QVBoxLayout(list_card)
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(0)
@@ -241,6 +249,13 @@ class ModernHistoryViewer(QMainWindow):
 
         main_layout.addWidget(splitter, 1)
 
+        # Setup keyboard shortcuts
+        self._setup_shortcuts()
+
+        # Setup context menu for history list
+        self.history_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.history_list.customContextMenuRequested.connect(self._show_context_menu)
+
     def _load_entries(self):
         """Load clipboard entries"""
         try:
@@ -308,6 +323,9 @@ class ModernHistoryViewer(QMainWindow):
 
             # If count changed, refresh the list
             if current_count != self.last_entry_count:
+                # Save previous count before reload (for new entry detection)
+                previous_count = self.last_entry_count
+
                 # Remember current selection
                 current_row = self.history_list.currentRow()
                 current_item_content = None
@@ -333,7 +351,7 @@ class ModernHistoryViewer(QMainWindow):
                     self.history_list.setCurrentRow(0)
 
                 # Show notification only for new entries (not deletions)
-                if current_count > self.last_entry_count:
+                if current_count > previous_count:
                     InfoBar.success(
                         title="New Entry",
                         content="Clipboard history updated",
@@ -390,12 +408,21 @@ class ModernHistoryViewer(QMainWindow):
         if not current:
             self.preview_text.clear()
             self.metadata_label.clear()
+            self.favorite_button.setChecked(False)
             return
 
         entry = current.data(Qt.ItemDataRole.UserRole)
         if entry:
             # Update preview
             self.preview_text.setPlainText(entry.content)
+
+            # Update favorite button state via repository API
+            if self.repository:
+                self.favorite_button.setChecked(
+                    self.repository.is_favorite(entry.content_hash)
+                )
+            else:
+                self.favorite_button.setChecked(False)
 
             # Update metadata with modern formatting
             metadata_lines = [
@@ -407,52 +434,47 @@ class ModernHistoryViewer(QMainWindow):
             self.metadata_label.setText(" · ".join(metadata_lines))
 
     def _on_search(self, text):
-        """Handle search input"""
-        search_text = text.lower()
+        """Handle search input - applies combined search + filter"""
+        self._apply_combined_filter()
+
+    def _on_filter_change(self, category):
+        """Handle category filter change - applies combined search + filter"""
+        self._apply_combined_filter()
+
+    def _apply_combined_filter(self):
+        """Apply both search text and category filter together"""
+        search_text = self.search_input.text().lower()
+        category = self.category_combo.currentText()
         visible_count = 0
+
+        category_map = {
+            "Text": "text",
+            "URL": "url",
+            "File Path": "file_path",
+            "Email": "email"
+        }
 
         for i in range(self.history_list.count()):
             item = self.history_list.item(i)
             entry = item.data(Qt.ItemDataRole.UserRole)
 
             if entry:
-                # Check if entry matches search
-                if search_text in entry.content.lower():
+                # Check search text match
+                matches_search = not search_text or search_text in entry.content.lower()
+
+                # Check category match
+                if category == "All":
+                    matches_category = True
+                else:
+                    internal_category = category_map.get(category, "text")
+                    matches_category = entry.category == internal_category
+
+                # Both conditions must be true
+                if matches_search and matches_category:
                     item.setHidden(False)
                     visible_count += 1
                 else:
                     item.setHidden(True)
-
-        # Update count label
-        self.count_label.setText(f"{visible_count} of {len(self.current_entries)} items")
-
-    def _on_filter_change(self, category):
-        """Handle category filter change"""
-        visible_count = 0
-
-        for i in range(self.history_list.count()):
-            item = self.history_list.item(i)
-            entry = item.data(Qt.ItemDataRole.UserRole)
-
-            if entry:
-                if category == "All":
-                    item.setHidden(False)
-                    visible_count += 1
-                else:
-                    # Convert display category to internal format
-                    category_map = {
-                        "Text": "text",
-                        "URL": "url",
-                        "File Path": "file_path",
-                        "Email": "email"
-                    }
-                    internal_category = category_map.get(category, "text")
-
-                    if entry.category == internal_category:
-                        item.setHidden(False)
-                        visible_count += 1
-                    else:
-                        item.setHidden(True)
 
         # Update count label
         self.count_label.setText(f"{visible_count} of {len(self.current_entries)} items")
@@ -574,6 +596,7 @@ class ModernHistoryViewer(QMainWindow):
     def _export_history(self):
         """Export history to file"""
         from PyQt6.QtWidgets import QFileDialog
+        import json
 
         filename, _ = QFileDialog.getSaveFileName(
             self,
@@ -582,32 +605,57 @@ class ModernHistoryViewer(QMainWindow):
             "JSON Files (*.json)"
         )
 
-        if filename and self.clipboard_history:
-            # Show progress tooltip
-            stateTooltip = StateToolTip("Exporting", "Please wait...", self)
-            stateTooltip.move(self.geometry().center())
-            stateTooltip.show()
+        if not filename:
+            return
 
-            try:
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(self.clipboard_history.to_json())
+        # Show progress tooltip
+        stateTooltip = StateToolTip("Exporting", "Please wait...", self)
+        stateTooltip.move(self.geometry().center())
+        stateTooltip.show()
 
-                stateTooltip.setContent("Export completed successfully")
-                stateTooltip.setState(True)
+        try:
+            # Export from current entries (works with both DB and in-memory)
+            entries_data = []
+            for entry in self.current_entries:
+                entries_data.append(entry.to_dict())
 
-                logger.info(f"History exported to {filename}")
+            export_data = {
+                'entries': entries_data,
+                'exported_at': datetime.now().isoformat(),
+                'count': len(entries_data)
+            }
 
-            except Exception as e:
-                stateTooltip.setContent(f"Export failed: {str(e)}")
-                stateTooltip.setState(False)
-                logger.error(f"Export failed: {e}")
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
 
-            finally:
-                stateTooltip.hide()
+            stateTooltip.setContent(f"Exported {len(entries_data)} entries")
+            stateTooltip.setState(True)
+
+            InfoBar.success(
+                title="Exported",
+                content=f"Exported {len(entries_data)} entries to file",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+
+            logger.info(f"History exported to {filename}")
+
+        except Exception as e:
+            stateTooltip.setContent(f"Export failed: {str(e)}")
+            stateTooltip.setState(False)
+            logger.error(f"Export failed: {e}")
+
+        finally:
+            stateTooltip.hide()
 
     def _import_history(self):
         """Import history from file"""
         from PyQt6.QtWidgets import QFileDialog
+        import json
+        from src.core.clipboard.history import ClipboardEntry
 
         filename, _ = QFileDialog.getOpenFileName(
             self,
@@ -616,30 +664,61 @@ class ModernHistoryViewer(QMainWindow):
             "JSON Files (*.json)"
         )
 
-        if filename and self.clipboard_history:
-            # Show progress tooltip
-            stateTooltip = StateToolTip("Importing", "Please wait...", self)
-            stateTooltip.move(self.geometry().center())
-            stateTooltip.show()
+        if not filename:
+            return
 
-            try:
-                with open(filename, 'r', encoding='utf-8') as f:
-                    self.clipboard_history.from_json(f.read())
+        # Show progress tooltip
+        stateTooltip = StateToolTip("Importing", "Please wait...", self)
+        stateTooltip.move(self.geometry().center())
+        stateTooltip.show()
 
-                self._load_entries()
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                data = json.load(f)
 
-                stateTooltip.setContent("Import completed successfully")
-                stateTooltip.setState(True)
+            entries = data.get('entries', [])
+            imported_count = 0
 
-                logger.info(f"History imported from {filename}")
+            for entry_data in entries:
+                try:
+                    entry = ClipboardEntry.from_dict(entry_data)
 
-            except Exception as e:
-                stateTooltip.setContent(f"Import failed: {str(e)}")
-                stateTooltip.setState(False)
-                logger.error(f"Import failed: {e}")
+                    # Save to repository (DB) if available
+                    if self.repository:
+                        self.repository.save_entry(entry)
 
-            finally:
-                stateTooltip.hide()
+                    # Save to in-memory history if available
+                    if self.clipboard_history:
+                        self.clipboard_history.import_entry(entry)
+
+                    imported_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to import entry: {e}")
+
+            self._load_entries()
+
+            stateTooltip.setContent(f"Imported {imported_count} entries")
+            stateTooltip.setState(True)
+
+            InfoBar.success(
+                title="Imported",
+                content=f"Imported {imported_count} of {len(entries)} entries",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
+
+            logger.info(f"History imported from {filename}: {imported_count} entries")
+
+        except Exception as e:
+            stateTooltip.setContent(f"Import failed: {str(e)}")
+            stateTooltip.setState(False)
+            logger.error(f"Import failed: {e}")
+
+        finally:
+            stateTooltip.hide()
 
     def _show_settings(self):
         """Show settings menu"""
@@ -729,44 +808,12 @@ class ModernHistoryViewer(QMainWindow):
             )
 
     def _on_github_settings_saved(self, settings):
-        """Handle GitHub settings being saved"""
-        logger.info("GitHub settings saved, reinitializing sync service...")
+        """Handle GitHub settings being saved - delegates to main app via callback"""
+        logger.info("GitHub settings saved, notifying main app...")
 
-        # Reinitialize GitHub sync service if main app reference exists
-        if hasattr(self, 'main_app') and self.main_app:
+        if self._on_github_settings_changed:
             try:
-                # Reinitialize encryption manager with updated key
-                from src.core.encryption import KeyManager, EncryptionManager
-                key_manager = KeyManager()
-                encryption_key = key_manager.get_or_create_key()
-                self.main_app.encryption_manager = EncryptionManager(encryption_key)
-                logger.info("Encryption manager reinitialized with updated key")
-
-                # Update GitHub sync service with new settings
-                from src.services.sync.github_sync import GitHubSyncService
-
-                self.main_app.github_sync = GitHubSyncService(
-                    token=settings.get('token'),
-                    repository=settings.get('repository')
-                )
-                logger.info("GitHub sync service reinitialized")
-
-                # Reinitialize auto sync service if GitHub sync is enabled
-                if self.main_app.github_sync.enabled:
-                    from src.services.auto_sync_service import AutoSyncService
-                    pull_interval = 60  # Default 60 seconds
-
-                    # Stop existing auto sync service if any
-                    if self.main_app.auto_sync_service:
-                        self.main_app.auto_sync_service.stop()
-
-                    self.main_app.auto_sync_service = AutoSyncService(pull_interval_seconds=pull_interval)
-                    self.main_app.auto_sync_service.set_push_callback(self.main_app._push_to_github)
-                    self.main_app.auto_sync_service.set_pull_callback(self.main_app._pull_from_github)
-                    self.main_app.auto_sync_service.start()
-                    logger.info("Auto sync service reinitialized")
-
-                # Show success notification
+                self._on_github_settings_changed(settings)
                 InfoBar.success(
                     title="GitHub Sync",
                     content="GitHub sync service has been updated with new settings",
@@ -778,43 +825,47 @@ class ModernHistoryViewer(QMainWindow):
                 )
             except Exception as e:
                 logger.error(f"Failed to reinitialize GitHub sync: {e}")
+                InfoBar.error(
+                    title="Error",
+                    content=f"Failed to update sync settings: {str(e)}",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self
+                )
+        else:
+            InfoBar.warning(
+                title="Settings Saved",
+                content="Restart the app to apply new GitHub settings",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+                parent=self
+            )
 
     def _restore_from_github(self):
         """Show dialog to restore from GitHub backup"""
         try:
             from src.ui.dialogs.restore_dialog import RestoreDialog
 
-            # Get current app instance for access to services
-            app = QApplication.instance()
-            if hasattr(app, 'main_window'):
-                main = app.main_window
+            if self.github_sync and self.github_sync.enabled:
+                dialog = RestoreDialog(
+                    self.github_sync,
+                    self.repository,
+                    self.encryption_manager,
+                    self
+                )
 
-                if main.github_sync and main.github_sync.enabled:
-                    dialog = RestoreDialog(
-                        main.github_sync,
-                        main.repository,
-                        main.encryption_manager,
-                        self
-                    )
+                # Connect signal to reload entries when restore is complete
+                dialog.restore_completed.connect(self._load_entries)
 
-                    # Connect signal to reload entries when restore is complete
-                    dialog.restore_completed.connect(self._load_entries)
-
-                    dialog.exec()
-                else:
-                    InfoBar.warning(
-                        title="GitHub Not Configured",
-                        content="Please configure GitHub settings first",
-                        orient=Qt.Orientation.Horizontal,
-                        isClosable=True,
-                        position=InfoBarPosition.TOP,
-                        duration=3000,
-                        parent=self
-                    )
+                dialog.exec()
             else:
-                InfoBar.error(
-                    title="Error",
-                    content="Cannot access main application services",
+                InfoBar.warning(
+                    title="GitHub Not Configured",
+                    content="Please configure GitHub settings first",
                     orient=Qt.Orientation.Horizontal,
                     isClosable=True,
                     position=InfoBarPosition.TOP,
@@ -833,6 +884,119 @@ class ModernHistoryViewer(QMainWindow):
                 duration=5000,
                 parent=self
             )
+
+    def _setup_shortcuts(self):
+        """Setup keyboard shortcuts"""
+        # Ctrl+C: Copy selected entry
+        copy_shortcut = QShortcut(QKeySequence("Ctrl+C"), self)
+        copy_shortcut.activated.connect(self._copy_to_clipboard)
+
+        # Ctrl+F: Focus search input
+        search_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        search_shortcut.activated.connect(lambda: self.search_input.setFocus())
+
+        # Delete: Delete selected entry
+        delete_shortcut = QShortcut(QKeySequence("Delete"), self)
+        delete_shortcut.activated.connect(self._delete_selected_entry)
+
+        # Escape: Close window
+        escape_shortcut = QShortcut(QKeySequence("Escape"), self)
+        escape_shortcut.activated.connect(self.close)
+
+        # F5: Refresh
+        refresh_shortcut = QShortcut(QKeySequence("F5"), self)
+        refresh_shortcut.activated.connect(self._load_entries)
+
+    def _show_context_menu(self, position):
+        """Show right-click context menu for history list"""
+        current_item = self.history_list.currentItem()
+        if not current_item:
+            return
+
+        menu = RoundMenu(parent=self)
+
+        copy_action = Action(FIF.COPY, "Copy to Clipboard")
+        copy_action.triggered.connect(self._copy_to_clipboard)
+        menu.addAction(copy_action)
+
+        fav_action = Action(FIF.HEART, "Toggle Favorite")
+        fav_action.triggered.connect(self._toggle_favorite)
+        menu.addAction(fav_action)
+
+        menu.addSeparator()
+
+        delete_action = Action(FIF.DELETE, "Delete Entry")
+        delete_action.triggered.connect(self._delete_selected_entry)
+        menu.addAction(delete_action)
+
+        menu.exec(self.history_list.mapToGlobal(position))
+
+    def _delete_selected_entry(self):
+        """Delete the currently selected entry"""
+        current_item = self.history_list.currentItem()
+        if not current_item:
+            return
+
+        entry = current_item.data(Qt.ItemDataRole.UserRole)
+        if not entry:
+            return
+
+        # Confirm deletion
+        w = MessageBox(
+            title="Delete Entry",
+            content=f"Delete this entry?\n\n{entry.content[:100]}{'...' if len(entry.content) > 100 else ''}",
+            parent=self
+        )
+        w.yesButton.setText("Delete")
+        w.cancelButton.setText("Cancel")
+
+        if w.exec():
+            try:
+                # Delete from database
+                if self.repository:
+                    self.repository.delete_entry(entry.content_hash)
+
+                # Delete from in-memory history
+                if self.clipboard_history:
+                    self.clipboard_history.remove_entry(entry.content_hash)
+
+                # Remove from UI
+                row = self.history_list.row(current_item)
+                self.history_list.takeItem(row)
+                self.current_entries = [
+                    e for e in self.current_entries if e.content_hash != entry.content_hash
+                ]
+                self.count_label.setText(f"{len(self.current_entries)} items")
+
+                # Update last_entry_count to avoid triggering auto-refresh
+                if self.repository:
+                    self.last_entry_count = self.repository.get_entry_count()
+                else:
+                    self.last_entry_count = len(self.current_entries)
+
+                InfoBar.success(
+                    title="Deleted",
+                    content="Entry deleted",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.BOTTOM,
+                    duration=1500,
+                    parent=self
+                )
+
+                logger.info(f"Deleted entry: {entry.content_hash[:8]}")
+
+            except Exception as e:
+                logger.error(f"Failed to delete entry: {e}")
+                InfoBar.error(
+                    title="Error",
+                    content=f"Failed to delete entry: {str(e)}",
+                    orient=Qt.Orientation.Horizontal,
+                    isClosable=True,
+                    position=InfoBarPosition.TOP,
+                    duration=3000,
+                    parent=self
+                )
 
     def closeEvent(self, event):
         """Handle window close event"""

@@ -360,7 +360,15 @@ class GitHubSyncService:
 
         try:
             file_content = self.repo.get_contents("settings.json")
-            content = base64.b64decode(file_content.content).decode('utf-8')
+
+            # Handle large files (>1MB)
+            if file_content.encoding is None or file_content.encoding == 'none':
+                headers = {'Authorization': f'token {self.token}'}
+                response = requests.get(file_content.download_url, headers=headers, timeout=30)
+                response.raise_for_status()
+                content = response.text
+            else:
+                content = base64.b64decode(file_content.content).decode('utf-8')
             settings = json.loads(content)
 
             logger.info("Settings retrieved from GitHub")
@@ -441,13 +449,13 @@ class GitHubSyncService:
             try:
                 # Try to update existing file
                 existing_file = self.repo.get_contents(LATEST_SYNC_FILE)
-                self.repo.update_file(
+                result = self.repo.update_file(
                     path=LATEST_SYNC_FILE,
                     message="Sync clipboard data",
                     content=content,
                     sha=existing_file.sha
                 )
-                self._last_sync_sha = existing_file.sha
+                self._last_sync_sha = result['content'].sha
                 logger.debug(f"Updated sync file: {LATEST_SYNC_FILE}")
 
             except GithubException:
@@ -485,8 +493,16 @@ class GitHubSyncService:
                 logger.debug("No changes detected (same SHA)")
                 return None
 
-            # Decode and parse content
-            content = base64.b64decode(file_content.content).decode('utf-8')
+            # Handle large files (>1MB) - GitHub returns encoding: none
+            if file_content.encoding is None or file_content.encoding == 'none':
+                logger.debug(f"Large sync file detected ({file_content.size} bytes), using download_url")
+                headers = {'Authorization': f'token {self.token}'}
+                response = requests.get(file_content.download_url, headers=headers, timeout=30)
+                response.raise_for_status()
+                content = response.text
+            else:
+                # Decode and parse content
+                content = base64.b64decode(file_content.content).decode('utf-8')
             data = json.loads(content)
 
             # Update last known SHA

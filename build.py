@@ -60,13 +60,13 @@ VSVersionInfo(
         StringTable(
           u'040904B0',
           [
-            StringStruct(u'CompanyName', u'ClipboardHistory'),
-            StringStruct(u'FileDescription', u'Clipboard History Manager'),
+            StringStruct(u'CompanyName', u'ClipSyncer'),
+            StringStruct(u'FileDescription', u'ClipSyncer - Clipboard History Manager'),
             StringStruct(u'FileVersion', u'1.0.0.0'),
-            StringStruct(u'InternalName', u'ClipboardHistory'),
-            StringStruct(u'LegalCopyright', u'© 2024 ClipboardHistory. All rights reserved.'),
-            StringStruct(u'OriginalFilename', u'ClipboardHistory.exe'),
-            StringStruct(u'ProductName', u'ClipboardHistory'),
+            StringStruct(u'InternalName', u'ClipSyncer'),
+            StringStruct(u'LegalCopyright', u'© 2024 ClipSyncer. All rights reserved.'),
+            StringStruct(u'OriginalFilename', u'ClipSyncer.exe'),
+            StringStruct(u'ProductName', u'ClipSyncer'),
             StringStruct(u'ProductVersion', u'1.0.0.0')
           ]
         )
@@ -103,7 +103,7 @@ def build_executable():
     print(f"  Running: {' '.join(cmd)}")
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
 
         if result.returncode == 0:
             print("  Build successful!")
@@ -142,14 +142,13 @@ def create_installer_script():
     print("Creating installer script...")
 
     nsis_script = '''
-!define APP_NAME "ClipboardHistory"
+!define APP_NAME "ClipSyncer"
 !define APP_VERSION "1.0.0"
-!define APP_PUBLISHER "ClipboardHistory Team"
-!define APP_WEB_SITE "https://github.com/yourusername/ClipboardHistory"
+!define APP_PUBLISHER "ClipSyncer"
 !define APP_UNINST_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_NAME}"
 
 Name "${APP_NAME} ${APP_VERSION}"
-OutFile "ClipboardHistory_Setup_${APP_VERSION}.exe"
+OutFile "ClipSyncer_Setup_${APP_VERSION}.exe"
 InstallDir "$PROGRAMFILES\\${APP_NAME}"
 InstallDirRegKey HKLM "Software\\${APP_NAME}" "InstallDir"
 RequestExecutionLevel admin
@@ -167,11 +166,11 @@ Section "${APP_NAME} (required)"
   SectionIn RO
 
   SetOutPath "$INSTDIR"
-  File "dist\\ClipboardHistory.exe"
+  File "dist\\ClipSyncer.exe"
 
   ; Create shortcuts
   CreateDirectory "$SMPROGRAMS\\${APP_NAME}"
-  CreateShortcut "$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk" "$INSTDIR\\ClipboardHistory.exe"
+  CreateShortcut "$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk" "$INSTDIR\\ClipSyncer.exe"
   CreateShortcut "$SMPROGRAMS\\${APP_NAME}\\Uninstall.lnk" "$INSTDIR\\uninstall.exe"
 
   ; Write uninstaller
@@ -182,26 +181,25 @@ Section "${APP_NAME} (required)"
   WriteRegStr HKLM "${APP_UNINST_KEY}" "UninstallString" "$INSTDIR\\uninstall.exe"
   WriteRegStr HKLM "${APP_UNINST_KEY}" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKLM "${APP_UNINST_KEY}" "Publisher" "${APP_PUBLISHER}"
-  WriteRegStr HKLM "${APP_UNINST_KEY}" "URLInfoAbout" "${APP_WEB_SITE}"
 SectionEnd
 
 Section "Start Menu Shortcuts"
   CreateDirectory "$SMPROGRAMS\\${APP_NAME}"
-  CreateShortcut "$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk" "$INSTDIR\\ClipboardHistory.exe"
+  CreateShortcut "$SMPROGRAMS\\${APP_NAME}\\${APP_NAME}.lnk" "$INSTDIR\\ClipSyncer.exe"
 SectionEnd
 
 Section "Desktop Shortcut"
-  CreateShortcut "$DESKTOP\\${APP_NAME}.lnk" "$INSTDIR\\ClipboardHistory.exe"
+  CreateShortcut "$DESKTOP\\${APP_NAME}.lnk" "$INSTDIR\\ClipSyncer.exe"
 SectionEnd
 
 Section "Run at Windows startup"
-  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "${APP_NAME}" "$INSTDIR\\ClipboardHistory.exe"
+  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "${APP_NAME}" "$INSTDIR\\ClipSyncer.exe"
 SectionEnd
 
 ; Uninstaller section
 Section "Uninstall"
   ; Remove files
-  Delete "$INSTDIR\\ClipboardHistory.exe"
+  Delete "$INSTDIR\\ClipSyncer.exe"
   Delete "$INSTDIR\\uninstall.exe"
 
   ; Remove shortcuts

@@ -38,35 +38,38 @@ Logs location: `%APPDATA%/ClipboardHistory/logs/` (script) or `./logs/` (exe)
 
 ## Architecture
 
-### Entry Points
-- `main_improved.py` - Main entry point (used by PyInstaller), contains `ClipboardHistoryApp` class
-- `main.py` - Legacy entry point (similar structure but fewer features)
+### Entry Point
+- `main_improved.py` - Sole entry point, contains `ClipboardHistoryApp` and `QtSignalBridge`
 
 ### Core Components (`src/core/`)
-- `clipboard/` - `ClipboardMonitor` (polls clipboard), `ClipboardHistory` (in-memory storage with deduplication via content hash)
-- `encryption/` - `EncryptionManager` (AES-256-GCM), `KeyManager` (Windows Credential Manager + PBKDF2 for sync password)
-- `storage/` - `DatabaseManager` (SQLite via SQLAlchemy), `ClipboardRepository` (data access layer)
+- `clipboard/` - `ClipboardMonitor` (polls via pyperclip), `ClipboardHistory` (in-memory storage with deduplication, `remove_entry()`, `import_entry()`)
+- `encryption/` - `EncryptionManager` (AES-256-GCM), `KeyManager` (Windows Credential Manager + PBKDF2HMAC for sync password)
+- `storage/` - `DatabaseManager` (SQLite via SQLAlchemy), `ClipboardRepository` (data access layer with `is_favorite()`, context-managed sessions)
 
 ### Services (`src/services/`)
-- `sync/github_sync.py` - `GitHubSyncService`: GitHub API integration, supports both github.com and GitHub Enterprise
+- `sync/github_sync.py` - `GitHubSyncService`: GitHub API integration (github.com + GitHub Enterprise), large file handling (>1MB)
 - `auto_sync_service.py` - `AutoSyncService`: Real-time push (5s debounce, 30s min interval) + periodic pull (60s)
-- `archive_manager.py` - `ArchiveManager`: Moves old entries to `backups/` folder after 7 days
-- `cleanup/` - `CleanupService`, `DuplicateRemover`, `OldDataCleaner`, `DatabaseOptimizer`
+- `archive_manager.py` - `ArchiveManager`: Moves overflow entries to local/GitHub archives with 7-day retention
+- `cleanup/` - `CleanupService` (APScheduler), `DuplicateRemover`, `OldDataCleaner`, `DatabaseOptimizer`
 
 ### UI (`src/ui/`)
-- `tray/` - System tray icon using `pystray`
-- `history/` - `ModernHistoryViewer` (QMainWindow with qfluentwidgets)
-- `dialogs/` - `GitHubSettingsDialog`, `WelcomeDialog` (first-run setup)
+- `tray/` - `ModernTrayIcon` (QSystemTrayIcon with Windows 11 Fluent Design, exported as `TrayIcon`)
+- `history/` - `ModernHistoryViewer` (QMainWindow with qfluentwidgets, exported as `HistoryViewer`)
+- `dialogs/` - `GitHubSettingsDialog`, `WelcomeDialog`, `AppSettingsDialog`, `RestoreDialog`
 
 ### Configuration
 - User config: `%APPDATA%/ClipboardHistory/settings.yaml`
 - GitHub config: `%APPDATA%/ClipboardHistory/github_settings.yaml` (separate file)
-- `ConfigManager` loads both files and merges them
+- GitHub token: stored in Windows Credential Manager via `keyring` (never in YAML)
+- `ConfigManager` loads both files and merges them; `save()` strips `github.token` before writing
 
 ## Key Design Patterns
 
 ### GitHub as Primary Storage
-When GitHub sync is enabled, GitHub becomes the primary storage and local SQLite is cache-only. On startup, the app clears local cache and pulls from GitHub.
+When GitHub sync is enabled, GitHub is primary storage and local SQLite is cache-only. On startup, the app clears local cache and pulls from GitHub.
+
+### Callback Pattern for UI-App Communication
+`ModernHistoryViewer` accepts `on_github_settings_changed` callback from `ClipboardHistoryApp._reinitialize_github_sync`. This avoids the UI reaching into app internals (Law of Demeter compliance).
 
 ### Encryption Flow
 1. User sets sync password in settings dialog
@@ -75,9 +78,9 @@ When GitHub sync is enabled, GitHub becomes the primary storage and local SQLite
 4. Content encrypted with `EncryptionManager.encrypt()` before GitHub upload
 
 ### Sync Architecture
-- `backups/clipboard_sync.json` - Single encrypted file containing all current entries (overwrites on each push)
+- `backups/clipboard_sync.json` - Single encrypted file containing all entries (overwrites on each push)
 - Bidirectional sync: pulls merge remote-only entries to local, then pushes local-only entries to remote
-- Archives created by `ArchiveManager` for entries older than 7 days, stored in `backups/archives/`
+- `sync/latest.json` - Real-time sync file for push_latest/pull_latest
 
 ### Qt Thread Safety
 - `QtSignalBridge` class with pyqtSignals for cross-thread communication
@@ -88,13 +91,16 @@ When GitHub sync is enabled, GitHub becomes the primary storage and local SQLite
 
 | File | Purpose |
 |------|---------|
-| `ClipSyncer.spec` | PyInstaller configuration with hidden imports for qfluentwidgets, PyQt6, keyring |
-| `src/utils/config_manager.py` | Loads settings.yaml + github_settings.yaml |
-| `src/services/sync/github_sync.py` | `upload_backup()`, `download_backup()`, `push_latest()`, `pull_latest()` - supports Enterprise via `enterprise_url` |
-| `src/services/auto_sync_service.py` | Real-time push (5s debounce, 30s min interval) + periodic pull (60s default) |
+| `main_improved.py` | Entry point, `ClipboardHistoryApp`, `QtSignalBridge` |
+| `ClipSyncer.spec` | PyInstaller configuration with hidden imports |
+| `hook-qfluentwidgets.py` | PyInstaller hook for collecting qfluentwidgets data |
+| `src/utils/config_manager.py` | Loads settings.yaml + github_settings.yaml, strips token on save |
+| `src/services/sync/github_sync.py` | `upload_backup()`, `download_backup()`, `push_latest()`, `pull_latest()` |
+| `src/services/auto_sync_service.py` | Real-time push (5s debounce, 30s min interval) + periodic pull (60s) |
 
 ## Common Issues
 
 - **GitHub sync not working**: Check that `github_settings.yaml` has `enabled: true` and repository is in `username/repo` format (not full URL)
 - **qfluentwidgets import errors in exe**: Ensure `collect_all('qfluentwidgets')` is in spec file
 - **Encryption mismatch between devices**: Must use same sync password on all devices
+- **PBKDF2 import**: Use `PBKDF2HMAC` from `cryptography.hazmat.primitives.kdf.pbkdf2`, not `PBKDF2`

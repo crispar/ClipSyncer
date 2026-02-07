@@ -6,7 +6,7 @@ REM Activate virtual environment
 call venv\Scripts\activate.bat
 
 REM Run the application
-python main.py
+python main_improved.py
 
 REM If error, pause to see the message
 if %ERRORLEVEL% NEQ 0 (

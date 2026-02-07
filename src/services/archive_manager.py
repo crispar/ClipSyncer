@@ -107,7 +107,7 @@ class ArchiveManager:
                     content=content,
                     sha=existing_file.sha
                 )
-            except:
+            except Exception:
                 # Create new file
                 self.github_sync.repo.create_file(
                     path=filepath,
@@ -173,7 +173,7 @@ class ArchiveManager:
             # Get archive folder contents
             try:
                 contents = self.github_sync.repo.get_contents("archives")
-            except:
+            except Exception:
                 # Archives folder doesn't exist
                 return 0
 
@@ -312,7 +312,7 @@ class ArchiveManager:
                         with open(file_path, 'r', encoding='utf-8') as f:
                             data = json.load(f)
                             stats['total_entries'] += data.get('entry_count', 0)
-                    except:
+                    except (json.JSONDecodeError, OSError):
                         pass
 
             if archives:

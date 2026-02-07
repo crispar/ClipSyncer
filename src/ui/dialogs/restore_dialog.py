@@ -3,15 +3,13 @@
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QDialog, QListWidget, QListWidgetItem
+from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QDialog, QListWidgetItem
 from qfluentwidgets import (
     PushButton, PrimaryPushButton, BodyLabel, CaptionLabel,
     InfoBar, InfoBarPosition, StateToolTip, FluentIcon as FIF,
     ListWidget, isDarkTheme, ProgressBar
 )
 from loguru import logger
-import yaml
-import os
 
 
 class RestoreWorker(QThread):
@@ -160,9 +158,10 @@ class RestoreDialog(QDialog):
         warning.setStyleSheet("color: #ff9800;")
         main_layout.addWidget(warning)
 
-        # Backup list
-        self.backup_list = QListWidget()
+        # Backup list (using Fluent-styled ListWidget)
+        self.backup_list = ListWidget()
         self.backup_list.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.backup_list.currentItemChanged.connect(self._on_backup_selected)
         main_layout.addWidget(self.backup_list, 1)
 
         # Info label
@@ -224,7 +223,7 @@ class RestoreDialog(QDialog):
                         date_str = filename.split('_')[-1].replace('.json', '')
                         timestamp = datetime.strptime(date_str, "%Y%m%d_%H%M%S" if '_' in date_str else "%Y%m%d%H%M%S")
                         date_display = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-                    except:
+                    except (ValueError, IndexError):
                         date_display = filename
                 else:
                     date_display = filename
@@ -238,6 +237,10 @@ class RestoreDialog(QDialog):
         except Exception as e:
             logger.error(f"Failed to load backups: {e}")
             self.info_label.setText(f"Error: {str(e)}")
+
+    def _on_backup_selected(self, current, previous):
+        """Enable restore button when a backup is selected"""
+        self.restore_button.setEnabled(current is not None)
 
     def _on_item_double_clicked(self, item):
         """Handle double-click on backup item"""
