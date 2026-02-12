@@ -215,11 +215,16 @@ class SyncCoordinator:
         # Prefer DB entries (persistent) over in-memory history
         entries = self._repository.get_entries(limit=500)
         if not entries:
-            entries = self._history.get_entries()
+            entries = self._history.get_entries(limit=500)
 
         payload = {
             'entries': [e.to_dict() for e in entries],
         }
         if self._config_getter:
-            payload['settings'] = self._config_getter()
+            import copy
+            settings = copy.deepcopy(self._config_getter())
+            # Strip sensitive data - token must never be included in sync payload
+            if 'github' in settings:
+                settings['github'].pop('token', None)
+            payload['settings'] = settings
         return payload

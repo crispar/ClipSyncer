@@ -88,7 +88,7 @@ GitHub token and encryption keys are stored securely in Windows Credential Manag
 ```yaml
 clipboard:
   check_interval: 500   # ms
-  max_history_size: 1000
+  max_history_size: 500
 
 encryption:
   enabled: true
