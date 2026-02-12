@@ -29,6 +29,7 @@ class QtSignalBridge(QObject):
     cleanup_signal = pyqtSignal()
     quit_signal = pyqtSignal()
     show_notification_signal = pyqtSignal(str, str)
+    refresh_history_signal = pyqtSignal()
 
 
 class ClipboardHistoryApp:
@@ -341,9 +342,12 @@ class ClipboardHistoryApp:
             logger.warning("GitHub sync not configured")
 
     def _pull_from_github(self):
-        """Pull from GitHub and merge (callback for auto sync)"""
+        """Pull from GitHub and merge (callback for auto sync, runs in background thread)"""
         if self.sync_coordinator:
-            self.sync_coordinator.pull_and_merge(self.history_viewer)
+            self.sync_coordinator.pull_and_merge()
+            # Refresh UI via signal (thread-safe)
+            if self.signal_bridge:
+                self.signal_bridge.refresh_history_signal.emit()
 
     def _cleanup_now(self):
         """Run cleanup immediately"""
@@ -357,6 +361,11 @@ class ClipboardHistoryApp:
                     )
 
         threading.Thread(target=cleanup_task, daemon=True).start()
+
+    def _refresh_history_viewer(self):
+        """Refresh history viewer (thread-safe, called via signal)"""
+        if self.history_viewer and self.history_viewer.isVisible():
+            self.history_viewer._load_entries()
 
     def _show_notification(self, title: str, message: str):
         """Show notification"""
@@ -415,6 +424,7 @@ class ClipboardHistoryApp:
             self.signal_bridge.cleanup_signal.connect(self._cleanup_now)
             self.signal_bridge.quit_signal.connect(self._quit_application)
             self.signal_bridge.show_notification_signal.connect(self._show_notification)
+            self.signal_bridge.refresh_history_signal.connect(self._refresh_history_viewer)
 
             # Start services
             self.clipboard_monitor.start()

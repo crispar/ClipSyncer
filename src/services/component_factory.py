@@ -48,7 +48,7 @@ class ComponentFactory:
         """Create clipboard monitoring components"""
         logger.info("Initializing clipboard monitoring...")
         check_interval = self.config.get('clipboard.check_interval', 500)
-        max_history = self.config.get('clipboard.max_history_size', 1000)
+        max_history = self.config.get('clipboard.max_history_size', 500)
         monitor = ClipboardMonitor(check_interval)
         history = ClipboardHistory(max_history)
         return monitor, history

@@ -90,7 +90,7 @@ class AppSettingsDialog(QDialog):
             },
             'clipboard': {
                 'check_interval': 500,
-                'max_history_size': 1000
+                'max_history_size': 500
             },
             'storage': {
                 'retention_days': 30
@@ -186,7 +186,7 @@ class AppSettingsDialog(QDialog):
         self.history_size_spin.setRange(50, 10000)
         self.history_size_spin.setSingleStep(100)
         self.history_size_spin.setValue(
-            self.current_settings.get('clipboard', {}).get('max_history_size', 1000)
+            self.current_settings.get('clipboard', {}).get('max_history_size', 500)
         )
         self.history_size_spin.setFixedWidth(140)
         layout.addWidget(self._create_setting_row(

@@ -178,7 +178,7 @@ class SyncCoordinator:
 
             # Refresh UI if viewer is open
             if history_viewer:
-                history_viewer.load_history()
+                history_viewer._load_entries()
 
         except Exception as e:
             logger.error(f"Pull and merge failed: {e}")
@@ -208,9 +208,14 @@ class SyncCoordinator:
         threading.Thread(target=sync_task, daemon=True).start()
 
     def _build_sync_payload(self) -> dict:
-        """Build the data payload for sync"""
+        """Build the data payload for sync (latest 500 entries from DB)"""
+        # Prefer DB entries (persistent) over in-memory history
+        entries = self._repository.get_entries(limit=500)
+        if not entries:
+            entries = self._history.get_entries()
+
         payload = {
-            'entries': [e.to_dict() for e in self._history.get_entries()],
+            'entries': [e.to_dict() for e in entries],
         }
         if self._config_getter:
             payload['settings'] = self._config_getter()

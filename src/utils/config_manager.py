@@ -50,7 +50,7 @@ class ConfigManager:
         self.config = {
             'clipboard': {
                 'check_interval': 500,
-                'max_history_size': 1000,
+                'max_history_size': 500,
                 'auto_start': True
             },
             'encryption': {

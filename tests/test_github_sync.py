@@ -1,7 +1,6 @@
 """Tests for GitHubSyncService"""
 
 import json
-import hashlib
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -60,30 +59,13 @@ class TestGitHubSyncInit:
 
 
 class TestUploadBackup:
-    """Tests for upload_backup with content hash check"""
+    """Tests for upload_backup"""
 
-    def test_upload_skips_unchanged_content(self, sync_service, mock_github):
-        """Should skip upload when content hasn't changed"""
-        data = {"entries": [{"content": "test"}]}
-        content = json.dumps(data, indent=2)
-
-        mock_file = MagicMock()
-        mock_file.decoded_content = content.encode('utf-8')
-        mock_file.sha = "abc123"
-        mock_github['repo'].get_contents.return_value = mock_file
-
-        result = sync_service.upload_backup(data)
-        assert result is True
-        # update_file should NOT be called since content is unchanged
-        mock_github['repo'].update_file.assert_not_called()
-
-    def test_upload_updates_changed_content(self, sync_service, mock_github):
-        """Should upload when content has changed"""
+    def test_upload_updates_existing_file(self, sync_service, mock_github):
+        """Should update existing file on GitHub"""
         data = {"entries": [{"content": "new"}]}
 
-        old_content = json.dumps({"entries": [{"content": "old"}]}, indent=2)
         mock_file = MagicMock()
-        mock_file.decoded_content = old_content.encode('utf-8')
         mock_file.sha = "abc123"
         mock_github['repo'].get_contents.return_value = mock_file
 
@@ -145,24 +127,3 @@ class TestDownloadBackup:
         assert result is None
 
 
-class TestContentHashComparison:
-    """Tests for the content hash comparison logic used in upload_backup"""
-
-    def test_identical_json_produces_same_hash(self):
-        """Verify that identical JSON content produces the same hash"""
-        data = {"entries": [{"content": "test", "hash": "abc"}]}
-        content1 = json.dumps(data, indent=2)
-        content2 = json.dumps(data, indent=2)
-        hash1 = hashlib.sha256(content1.encode('utf-8')).hexdigest()
-        hash2 = hashlib.sha256(content2.encode('utf-8')).hexdigest()
-        assert hash1 == hash2
-
-    def test_different_json_produces_different_hash(self):
-        """Verify that different JSON content produces different hashes"""
-        data1 = {"entries": [{"content": "old"}]}
-        data2 = {"entries": [{"content": "new"}]}
-        content1 = json.dumps(data1, indent=2)
-        content2 = json.dumps(data2, indent=2)
-        hash1 = hashlib.sha256(content1.encode('utf-8')).hexdigest()
-        hash2 = hashlib.sha256(content2.encode('utf-8')).hexdigest()
-        assert hash1 != hash2

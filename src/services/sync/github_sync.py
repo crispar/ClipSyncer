@@ -2,7 +2,6 @@
 
 import json
 import base64
-import hashlib
 import requests
 from typing import Optional, Dict, Any, List, Set, Tuple
 from datetime import datetime
@@ -170,15 +169,6 @@ class GitHubSyncService(SyncBackend):
             # Check if file exists
             try:
                 existing_file = self._repo.get_contents(filepath)
-
-                # Skip update if content hasn't changed (avoid unnecessary commits)
-                new_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
-                existing_content = existing_file.decoded_content.decode('utf-8')
-                old_hash = hashlib.sha256(existing_content.encode('utf-8')).hexdigest()
-
-                if new_hash == old_hash:
-                    logger.debug("Sync file content unchanged, skipping upload")
-                    return True
 
                 # Update existing file
                 self._repo.update_file(

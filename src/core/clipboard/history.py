@@ -53,7 +53,7 @@ class ClipboardEntry:
 class ClipboardHistory:
     """Manages clipboard history with duplicate detection"""
 
-    def __init__(self, max_size: int = 1000, dedupe_enabled: bool = True):
+    def __init__(self, max_size: int = 500, dedupe_enabled: bool = True):
         """
         Initialize clipboard history
 
@@ -335,7 +335,7 @@ class ClipboardHistory:
         data = json.loads(json_str)
 
         with self._lock:
-            self.max_size = data.get('max_size', 1000)
+            self.max_size = data.get('max_size', 500)
             self.dedupe_enabled = data.get('dedupe_enabled', True)
 
             self._entries = []
