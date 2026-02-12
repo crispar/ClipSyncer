@@ -53,32 +53,37 @@ class SyncCoordinator:
             return 0
 
         try:
-            logger.info("Clearing local cache before initial sync...")
-            self._repository.clear_all()
-            self._history.clear()
-
-            logger.info("Loading initial data from remote...")
+            # Download and decrypt BEFORE clearing local data to prevent data loss
+            logger.info("Downloading remote data for initial sync...")
             backup_data = self._sync_backend.download_backup()
             if not backup_data:
-                logger.error("Failed to download initial backup")
+                logger.warning("No remote backup found - keeping local data")
                 return 0
 
             decrypted = self._encryption.decrypt_json(backup_data)
             if not decrypted:
-                logger.warning("Failed to decrypt backup - may need sync password")
+                logger.warning("Failed to decrypt backup - keeping local data (may need sync password)")
                 return 0
 
             remote_entries = decrypted.get('entries', [])
-            loaded_count = 0
+            if not remote_entries:
+                logger.info("Remote backup is empty - keeping local data")
+                return 0
 
+            # Only clear local data after successful download and decrypt
+            logger.info("Remote data verified, clearing local cache...")
+            self._repository.clear_all()
+            self._history.clear()
+
+            loaded_count = 0
+            from datetime import datetime
             for entry_data in remote_entries:
                 try:
-                    from datetime import datetime
                     entry = ClipboardEntry(
                         content=entry_data['content'],
                         timestamp=datetime.fromisoformat(entry_data['timestamp']),
                         content_hash=entry_data.get('content_hash'),
-                        category=entry_data.get('category'),
+                        category=entry_data.get('category') or 'text',
                         metadata=entry_data.get('metadata', {})
                     )
                     self._repository.save_entry(entry)
@@ -157,7 +162,7 @@ class SyncCoordinator:
                         content=entry_data['content'],
                         timestamp=datetime.fromisoformat(entry_data['timestamp']),
                         content_hash=content_hash,
-                        category=entry_data.get('category'),
+                        category=entry_data.get('category') or 'text',
                         metadata=entry_data.get('metadata', {})
                     )
                     if self._history.import_entry(entry):
@@ -169,12 +174,10 @@ class SyncCoordinator:
             if added_to_local > 0:
                 logger.info(f"Added {added_to_local} entries from remote to local")
 
-            # Push merged data if needed
-            if added_to_local > 0 and local_only_hashes:
-                logger.info(f"Found {len(local_only_hashes)} local entries not on remote, syncing...")
+            # Push merged data if there are local-only entries
+            if local_only_hashes:
+                logger.info(f"Found {len(local_only_hashes)} local-only entries, pushing to remote...")
                 self.push_to_remote()
-            elif local_only_hashes:
-                logger.debug(f"{len(local_only_hashes)} local-only entries, no new remote entries - skipping push")
 
             # Refresh UI if viewer is open
             if history_viewer:

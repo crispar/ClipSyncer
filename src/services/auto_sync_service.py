@@ -73,6 +73,9 @@ class AutoSyncService:
 
     def _execute_push(self):
         """Execute push sync if conditions are met"""
+        callback = None
+        pending = 0
+
         with self._lock:
             if not self.enabled or not self._push_callback:
                 return
@@ -93,15 +96,20 @@ class AutoSyncService:
                 self._debounce_timer.start()
                 return
 
-            # Execute push
-            try:
-                logger.info(f"Executing push sync ({self._pending_changes} changes)")
-                self._push_callback()
+            # Copy state and release lock before network call
+            callback = self._push_callback
+            pending = self._pending_changes
+
+        # Execute push outside lock to avoid blocking trigger_push during network call
+        try:
+            logger.info(f"Executing push sync ({pending} changes)")
+            callback()
+            with self._lock:
                 self._last_push = datetime.now()
                 self._pending_changes = 0
-                logger.info("Push sync completed")
-            except Exception as e:
-                logger.error(f"Push sync failed: {e}")
+            logger.info("Push sync completed")
+        except Exception as e:
+            logger.error(f"Push sync failed: {e}")
 
     def _execute_pull(self):
         """Execute pull sync and schedule next one"""

@@ -497,8 +497,16 @@ class GitHubSyncService(SyncBackend):
                 logger.debug("No changes detected (same SHA)")
                 return None
 
-            # Decode and parse content
-            content = base64.b64decode(file_content.content).decode('utf-8')
+            # Decode and parse content (handle large files >1MB)
+            if file_content.encoding is None or file_content.encoding == 'none':
+                logger.debug(f"Large sync file detected ({file_content.size} bytes), using download_url")
+                headers = {'Authorization': f'token {self._token}'}
+                response = requests.get(file_content.download_url, headers=headers, timeout=30)
+                response.raise_for_status()
+                content = response.text
+            else:
+                content = base64.b64decode(file_content.content).decode('utf-8')
+
             data = json.loads(content)
 
             # Update last known SHA

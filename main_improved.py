@@ -313,7 +313,11 @@ class ClipboardHistoryApp:
                 self.auto_sync.start()
                 logger.info("Auto sync service reinitialized")
 
-            # Update history viewer references
+            # Update all references to new instances
+            if self.archive_manager:
+                self.archive_manager.github_sync = self.github_sync
+            if self.repository:
+                self.repository.encryption = self.encryption_manager
             if self.history_viewer:
                 self.history_viewer.github_sync = self.github_sync
                 self.history_viewer.encryption_manager = self.encryption_manager
