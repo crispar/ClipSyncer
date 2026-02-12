@@ -6,11 +6,15 @@ import json
 from typing import Any, Dict, Optional
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import InvalidTag
 from loguru import logger
 
+from ..exceptions import EncryptionError, DecryptionError
+from ..interfaces import EncryptionStrategy
 
-class EncryptionManager:
-    """Handles encryption and decryption of clipboard data"""
+
+class EncryptionManager(EncryptionStrategy):
+    """Handles encryption and decryption of clipboard data using AES-256-GCM"""
 
     def __init__(self, key: Optional[bytes] = None):
         """
@@ -18,17 +22,25 @@ class EncryptionManager:
 
         Args:
             key: 32-byte encryption key (generates new if None)
+
+        Raises:
+            EncryptionError: If key is invalid
         """
         if key is None:
-            self.key = self.generate_key()
+            self._key = self.generate_key()
             logger.info("Generated new encryption key")
         else:
-            if len(key) != 32:
-                raise ValueError("Key must be 32 bytes for AES-256")
-            self.key = key
+            if not isinstance(key, bytes) or len(key) != 32:
+                raise EncryptionError("Key must be 32 bytes for AES-256")
+            self._key = key
             logger.info("Initialized with provided key")
 
-        self.backend = default_backend()
+        self._backend = default_backend()
+
+    @property
+    def key(self) -> bytes:
+        """Access encryption key (read-only property for backward compatibility)"""
+        return self._key
 
     @staticmethod
     def generate_key() -> bytes:
@@ -44,16 +56,22 @@ class EncryptionManager:
 
         Returns:
             Dictionary with encrypted data, nonce, and tag
+
+        Raises:
+            EncryptionError: If data is invalid or encryption fails
         """
+        if not isinstance(data, str):
+            raise EncryptionError(f"Expected str, got {type(data).__name__}")
+
         try:
             # Generate a random 96-bit nonce
             nonce = os.urandom(12)
 
             # Create cipher
             cipher = Cipher(
-                algorithms.AES(self.key),
+                algorithms.AES(self._key),
                 modes.GCM(nonce),
-                backend=self.backend
+                backend=self._backend
             )
             encryptor = cipher.encryptor()
 
@@ -74,9 +92,11 @@ class EncryptionManager:
             logger.debug(f"Encrypted {len(data)} characters")
             return result
 
+        except EncryptionError:
+            raise
         except Exception as e:
             logger.error(f"Encryption failed: {e}")
-            raise
+            raise EncryptionError(f"Encryption failed: {e}") from e
 
     def decrypt(self, encrypted_data: Dict[str, str]) -> str:
         """
@@ -87,7 +107,18 @@ class EncryptionManager:
 
         Returns:
             Decrypted string
+
+        Raises:
+            DecryptionError: If data is invalid, key is wrong, or decryption fails
         """
+        if not isinstance(encrypted_data, dict):
+            raise DecryptionError(f"Expected dict, got {type(encrypted_data).__name__}")
+
+        required_keys = {'ciphertext', 'nonce', 'tag'}
+        missing = required_keys - set(encrypted_data.keys())
+        if missing:
+            raise DecryptionError(f"Missing required fields: {missing}")
+
         try:
             # Decode from base64
             ciphertext = base64.b64decode(encrypted_data['ciphertext'])
@@ -96,9 +127,9 @@ class EncryptionManager:
 
             # Create cipher
             cipher = Cipher(
-                algorithms.AES(self.key),
+                algorithms.AES(self._key),
                 modes.GCM(nonce, tag),
-                backend=self.backend
+                backend=self._backend
             )
             decryptor = cipher.decryptor()
 
@@ -109,9 +140,15 @@ class EncryptionManager:
             logger.debug(f"Decrypted {len(result)} characters")
             return result
 
+        except InvalidTag:
+            raise DecryptionError(
+                "Decryption failed: wrong encryption key or corrupted data"
+            )
+        except DecryptionError:
+            raise
         except Exception as e:
             logger.error(f"Decryption failed: {e}")
-            raise
+            raise DecryptionError(f"Decryption failed: {e}") from e
 
     def encrypt_json(self, obj: Any) -> Dict[str, str]:
         """
@@ -122,8 +159,14 @@ class EncryptionManager:
 
         Returns:
             Encrypted data dictionary
+
+        Raises:
+            EncryptionError: If serialization or encryption fails
         """
-        json_str = json.dumps(obj, ensure_ascii=False, indent=2)
+        try:
+            json_str = json.dumps(obj, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError) as e:
+            raise EncryptionError(f"JSON serialization failed: {e}") from e
         return self.encrypt(json_str)
 
     def decrypt_json(self, encrypted_data: Dict[str, str]) -> Any:
@@ -135,9 +178,15 @@ class EncryptionManager:
 
         Returns:
             Decrypted and parsed object
+
+        Raises:
+            DecryptionError: If decryption or JSON parsing fails
         """
         json_str = self.decrypt(encrypted_data)
-        return json.loads(json_str)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise DecryptionError(f"JSON parsing failed after decryption: {e}") from e
 
     def encrypt_file(self, input_path: str, output_path: str) -> None:
         """
@@ -146,21 +195,25 @@ class EncryptionManager:
         Args:
             input_path: Path to input file
             output_path: Path to output encrypted file
+
+        Raises:
+            EncryptionError: If file operation or encryption fails
         """
         try:
             with open(input_path, 'r', encoding='utf-8') as f:
                 data = f.read()
+        except OSError as e:
+            raise EncryptionError(f"Failed to read input file: {e}") from e
 
-            encrypted = self.encrypt(data)
+        encrypted = self.encrypt(data)
 
+        try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(encrypted, f, indent=2)
+        except OSError as e:
+            raise EncryptionError(f"Failed to write output file: {e}") from e
 
-            logger.info(f"Encrypted file: {input_path} -> {output_path}")
-
-        except Exception as e:
-            logger.error(f"File encryption failed: {e}")
-            raise
+        logger.info(f"Encrypted file: {input_path} -> {output_path}")
 
     def decrypt_file(self, input_path: str, output_path: str) -> None:
         """
@@ -169,21 +222,27 @@ class EncryptionManager:
         Args:
             input_path: Path to encrypted file
             output_path: Path to output decrypted file
+
+        Raises:
+            DecryptionError: If file operation or decryption fails
         """
         try:
             with open(input_path, 'r', encoding='utf-8') as f:
                 encrypted = json.load(f)
+        except OSError as e:
+            raise DecryptionError(f"Failed to read encrypted file: {e}") from e
+        except json.JSONDecodeError as e:
+            raise DecryptionError(f"Invalid encrypted file format: {e}") from e
 
-            data = self.decrypt(encrypted)
+        data = self.decrypt(encrypted)
 
+        try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(data)
+        except OSError as e:
+            raise DecryptionError(f"Failed to write output file: {e}") from e
 
-            logger.info(f"Decrypted file: {input_path} -> {output_path}")
-
-        except Exception as e:
-            logger.error(f"File decryption failed: {e}")
-            raise
+        logger.info(f"Decrypted file: {input_path} -> {output_path}")
 
     def verify_key(self, test_data: Optional[Dict[str, str]] = None) -> bool:
         """
@@ -197,10 +256,8 @@ class EncryptionManager:
         """
         try:
             if test_data:
-                # Try to decrypt provided data
                 self.decrypt(test_data)
             else:
-                # Test with sample data
                 test_str = "test_verification"
                 encrypted = self.encrypt(test_str)
                 decrypted = self.decrypt(encrypted)
@@ -208,6 +265,8 @@ class EncryptionManager:
 
             return True
 
+        except (EncryptionError, DecryptionError):
+            return False
         except Exception as e:
             logger.error(f"Key verification failed: {e}")
             return False

@@ -38,13 +38,13 @@ class ClipboardMonitor:
         """
         with self._lock:
             self._callbacks.add(callback)
-            logger.debug(f"Added callback: {callback.__name__}")
+            logger.debug(f"Added callback: {getattr(callback, '__name__', repr(callback))}")
 
     def remove_callback(self, callback: Callable) -> None:
         """Remove a callback"""
         with self._lock:
             self._callbacks.discard(callback)
-            logger.debug(f"Removed callback: {callback.__name__}")
+            logger.debug(f"Removed callback: {getattr(callback, '__name__', repr(callback))}")
 
     def start(self) -> None:
         """Start monitoring the clipboard"""
@@ -105,10 +105,11 @@ class ClipboardMonitor:
         # Calculate hash for efficient comparison
         content_hash = hashlib.sha256(content.encode()).hexdigest()
 
-        if content_hash != self._last_hash:
-            self._last_content = content
-            self._last_hash = content_hash
-            return True
+        with self._lock:
+            if content_hash != self._last_hash:
+                self._last_content = content
+                self._last_hash = content_hash
+                return True
 
         return False
 
@@ -127,7 +128,7 @@ class ClipboardMonitor:
             try:
                 callback(content, timestamp)
             except Exception as e:
-                logger.error(f"Error in callback {callback.__name__}: {e}")
+                logger.error(f"Error in callback {getattr(callback, '__name__', repr(callback))}: {e}")
 
     @property
     def is_running(self) -> bool:

@@ -73,7 +73,6 @@ class AutoSyncService:
 
     def _execute_push(self):
         """Execute push sync if conditions are met"""
-        callback = None
         with self._lock:
             if not self.enabled or not self._push_callback:
                 return
@@ -94,48 +93,45 @@ class AutoSyncService:
                 self._debounce_timer.start()
                 return
 
-            callback = self._push_callback
-            pending = self._pending_changes
-
-        # Execute push OUTSIDE the lock to avoid blocking other operations
-        if callback:
+            # Execute push
             try:
-                logger.info(f"Executing push sync ({pending} changes)")
-                callback()
-                with self._lock:
-                    self._last_push = datetime.now()
-                    self._pending_changes = 0
+                logger.info(f"Executing push sync ({self._pending_changes} changes)")
+                self._push_callback()
+                self._last_push = datetime.now()
+                self._pending_changes = 0
                 logger.info("Push sync completed")
             except Exception as e:
                 logger.error(f"Push sync failed: {e}")
 
     def _execute_pull(self):
         """Execute pull sync and schedule next one"""
-        if not self.enabled:
-            return
+        with self._lock:
+            if not self.enabled:
+                return
 
-        try:
-            if self._pull_callback:
-                logger.debug("Executing pull sync")
-                self._pull_callback()
-                self._last_pull = datetime.now()
-        except Exception as e:
-            logger.error(f"Pull sync failed: {e}")
-        finally:
-            # Schedule next pull
-            self._schedule_next_pull()
+            try:
+                if self._pull_callback:
+                    logger.debug("Executing pull sync")
+                    self._pull_callback()
+                    self._last_pull = datetime.now()
+            except Exception as e:
+                logger.error(f"Pull sync failed: {e}")
+            finally:
+                # Schedule next pull
+                self._schedule_next_pull()
 
     def _schedule_next_pull(self):
         """Schedule the next pull check"""
         if not self.enabled:
             return
 
-        if self._pull_timer:
-            self._pull_timer.cancel()
+        with self._lock:
+            if self._pull_timer:
+                self._pull_timer.cancel()
 
-        self._pull_timer = threading.Timer(self.pull_interval, self._execute_pull)
-        self._pull_timer.daemon = True
-        self._pull_timer.start()
+            self._pull_timer = threading.Timer(self.pull_interval, self._execute_pull)
+            self._pull_timer.daemon = True
+            self._pull_timer.start()
 
     def start(self):
         """Start automatic sync service"""
@@ -190,16 +186,17 @@ class AutoSyncService:
 
     def force_pull(self):
         """Force an immediate pull sync"""
-        if not self._pull_callback:
-            logger.warning("No pull callback set")
-            return
+        with self._lock:
+            if not self._pull_callback:
+                logger.warning("No pull callback set")
+                return
 
-        try:
-            logger.info("Executing forced pull sync")
-            self._pull_callback()
-            self._last_pull = datetime.now()
-        except Exception as e:
-            logger.error(f"Forced pull sync failed: {e}")
+            try:
+                logger.info("Executing forced pull sync")
+                self._pull_callback()
+                self._last_pull = datetime.now()
+            except Exception as e:
+                logger.error(f"Forced pull sync failed: {e}")
 
     @property
     def pull_interval_seconds(self) -> int:

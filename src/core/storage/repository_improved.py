@@ -8,19 +8,20 @@ from loguru import logger
 
 from .database import ClipboardEntryDB, SettingsDB, DatabaseManager
 from ..clipboard.history import ClipboardEntry
-from ..encryption.manager import EncryptionManager
+from ..exceptions import StorageError, DecryptionError
+from ..interfaces import EncryptionStrategy, StorageBackend
 
 
-class ClipboardRepository:
+class ClipboardRepository(StorageBackend):
     """Repository for clipboard data operations with improved session management"""
 
-    def __init__(self, database_manager: DatabaseManager, encryption_manager: EncryptionManager):
+    def __init__(self, database_manager: DatabaseManager, encryption_manager: EncryptionStrategy):
         """
         Initialize repository
 
         Args:
             database_manager: DatabaseManager instance
-            encryption_manager: Encryption manager instance
+            encryption_manager: Encryption strategy for data encryption/decryption
         """
         self.db_manager = database_manager
         self.encryption = encryption_manager
@@ -47,6 +48,9 @@ class ClipboardRepository:
 
         Returns:
             True if successful
+
+        Raises:
+            StorageError: If save operation fails
         """
         try:
             with self.get_session() as session:
@@ -74,12 +78,13 @@ class ClipboardRepository:
                         entry_metadata=json.dumps(entry.metadata) if entry.metadata else None
                     )
                     session.add(db_entry)
-                    # Handle both string and int hash types
                     hash_str = str(entry.content_hash)[:8] if entry.content_hash else "unknown"
                     logger.debug(f"Saved new entry: {hash_str}")
 
                 return True
 
+        except StorageError:
+            raise
         except Exception as e:
             logger.error(f"Failed to save entry: {e}")
             return False
@@ -368,10 +373,12 @@ class ClipboardRepository:
 
         Returns:
             True if successful
+
+        Raises:
+            StorageError: If clearing fails
         """
         try:
             with self.get_session() as session:
-                # Delete all clipboard entries
                 session.query(ClipboardEntryDB).delete()
                 # commit is handled by the context manager
                 logger.info("Cleared all clipboard entries from database")

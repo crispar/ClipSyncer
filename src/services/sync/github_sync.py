@@ -2,18 +2,22 @@
 
 import json
 import base64
+import hashlib
 import requests
 from typing import Optional, Dict, Any, List, Set, Tuple
 from datetime import datetime
 from github import Github, GithubException
 from loguru import logger
 
+from src.core.exceptions import SyncError, SyncConnectionError, SyncAuthenticationError
+from src.core.interfaces import SyncBackend
+
 
 # Constants for real-time sync
 LATEST_SYNC_FILE = "sync/latest.json"  # Single file for real-time sync
 
 
-class GitHubSyncService:
+class GitHubSyncService(SyncBackend):
     """Manages GitHub synchronization for clipboard data"""
 
     def __init__(self, token: Optional[str] = None, repository: Optional[str] = None,
@@ -26,12 +30,12 @@ class GitHubSyncService:
             repository: Repository name (format: username/repo)
             enterprise_url: GitHub Enterprise URL (e.g., 'https://github.sec.samsung.net')
         """
-        self.token = token
+        self._token = token
         self.repository_name = repository
         self.enterprise_url = enterprise_url
-        self.github = None
-        self.repo = None
-        self.enabled = False
+        self._github = None
+        self._repo = None
+        self._enabled = False
 
         # Track last known state for incremental sync
         self._last_sync_sha: Optional[str] = None
@@ -39,6 +43,16 @@ class GitHubSyncService:
 
         if token and repository:
             self.connect()
+
+    @property
+    def enabled(self) -> bool:
+        """Whether sync is enabled (backward compatibility)"""
+        return self._enabled
+
+    @property
+    def is_enabled(self) -> bool:
+        """Whether this sync backend is connected and enabled"""
+        return self._enabled
 
     def connect(self) -> bool:
         """
@@ -48,29 +62,27 @@ class GitHubSyncService:
             True if successful
         """
         try:
-            if not self.token:
+            if not self._token:
                 logger.warning("No GitHub token provided")
                 return False
 
             # Connect to GitHub Enterprise or regular GitHub
             if self.enterprise_url:
-                # For GitHub Enterprise, we need to append /api/v3 to the base URL
                 api_url = f"{self.enterprise_url.rstrip('/')}/api/v3"
                 logger.info(f"Connecting to GitHub Enterprise at: {api_url}")
-                self.github = Github(base_url=api_url, login_or_token=self.token)
+                self._github = Github(base_url=api_url, login_or_token=self._token)
             else:
-                # Regular GitHub.com
-                self.github = Github(self.token)
+                self._github = Github(self._token)
 
             # Verify token by getting user
-            user = self.github.get_user()
+            user = self._github.get_user()
             logger.info(f"Connected to GitHub as: {user.login}")
 
             # Get or create repository
             if self.repository_name:
-                self.repo = self._get_or_create_repo()
-                if self.repo:
-                    self.enabled = True
+                self._repo = self._get_or_create_repo()
+                if self._repo:
+                    self._enabled = True
                     logger.info(f"Connected to repository: {self.repository_name}")
                     return True
 
@@ -92,7 +104,7 @@ class GitHubSyncService:
         """
         try:
             # Try to get existing repo
-            repo = self.github.get_repo(self.repository_name)
+            repo = self._github.get_repo(self.repository_name)
             logger.info(f"Found existing repository: {self.repository_name}")
             return repo
 
@@ -100,12 +112,12 @@ class GitHubSyncService:
             logger.debug(f"Repository not found with full name, trying to create: {e}")
             # Repository doesn't exist, try to create it
             try:
-                user = self.github.get_user()
+                user = self._github.get_user()
                 repo_name = self.repository_name.split('/')[-1]
 
                 # Check if repo exists under user account
                 try:
-                    repo = self.github.get_repo(f"{user.login}/{repo_name}")
+                    repo = self._github.get_repo(f"{user.login}/{repo_name}")
                     logger.info(f"Found existing repository: {user.login}/{repo_name}")
                     return repo
                 except GithubException:
@@ -124,9 +136,9 @@ class GitHubSyncService:
                 # If creation failed due to already exists, try to get it one more time
                 if "already exists" in str(e).lower():
                     try:
-                        user = self.github.get_user()
+                        user = self._github.get_user()
                         repo_name = self.repository_name.split('/')[-1]
-                        repo = self.github.get_repo(f"{user.login}/{repo_name}")
+                        repo = self._github.get_repo(f"{user.login}/{repo_name}")
                         logger.info(f"Found existing repository after creation failed: {user.login}/{repo_name}")
                         return repo
                     except GithubException as retry_error:
@@ -144,7 +156,7 @@ class GitHubSyncService:
         Returns:
             True if successful
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             logger.warning("GitHub sync not enabled")
             return False
 
@@ -157,9 +169,19 @@ class GitHubSyncService:
 
             # Check if file exists
             try:
-                existing_file = self.repo.get_contents(filepath)
+                existing_file = self._repo.get_contents(filepath)
+
+                # Skip update if content hasn't changed (avoid unnecessary commits)
+                new_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+                existing_content = existing_file.decoded_content.decode('utf-8')
+                old_hash = hashlib.sha256(existing_content.encode('utf-8')).hexdigest()
+
+                if new_hash == old_hash:
+                    logger.debug("Sync file content unchanged, skipping upload")
+                    return True
+
                 # Update existing file
-                self.repo.update_file(
+                self._repo.update_file(
                     path=filepath,
                     message="Update clipboard sync data",
                     content=content,
@@ -169,7 +191,7 @@ class GitHubSyncService:
 
             except GithubException:
                 # Create new file
-                self.repo.create_file(
+                self._repo.create_file(
                     path=filepath,
                     message="Initial clipboard sync data",
                     content=content
@@ -192,20 +214,20 @@ class GitHubSyncService:
         Returns:
             Backup data or None
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             logger.warning("GitHub sync not enabled")
             return None
 
         try:
             # Always use the same file for sync (Primary Storage mode)
             filepath = "backups/clipboard_sync.json"
-            file_content = self.repo.get_contents(filepath)
+            file_content = self._repo.get_contents(filepath)
 
             # Handle large files (>1MB) - GitHub returns encoding: none
             if file_content.encoding is None or file_content.encoding == 'none':
                 # Use download_url for large files
                 logger.debug(f"Large file detected ({file_content.size} bytes), using download_url")
-                headers = {'Authorization': f'token {self.token}'}
+                headers = {'Authorization': f'token {self._token}'}
                 response = requests.get(file_content.download_url, headers=headers, timeout=30)
                 response.raise_for_status()
                 content = response.text
@@ -245,7 +267,7 @@ class GitHubSyncService:
         Returns:
             List of backup metadata
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             logger.warning("GitHub sync not enabled")
             return []
 
@@ -253,7 +275,7 @@ class GitHubSyncService:
             backups = []
 
             try:
-                contents = self.repo.get_contents("backups")
+                contents = self._repo.get_contents("backups")
 
                 for file in contents:
                     if file.name.endswith('.json'):
@@ -285,15 +307,15 @@ class GitHubSyncService:
         Returns:
             True if successful
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             logger.warning("GitHub sync not enabled")
             return False
 
         try:
             filepath = f"backups/{filename}"
-            file_content = self.repo.get_contents(filepath)
+            file_content = self._repo.get_contents(filepath)
 
-            self.repo.delete_file(
+            self._repo.delete_file(
                 path=filepath,
                 message=f"Delete backup: {filename}",
                 sha=file_content.sha
@@ -316,7 +338,7 @@ class GitHubSyncService:
         Returns:
             True if successful
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             return False
 
         try:
@@ -325,8 +347,8 @@ class GitHubSyncService:
 
             try:
                 # Update existing settings
-                existing_file = self.repo.get_contents(filepath)
-                self.repo.update_file(
+                existing_file = self._repo.get_contents(filepath)
+                self._repo.update_file(
                     path=filepath,
                     message="Update application settings",
                     content=content,
@@ -335,7 +357,7 @@ class GitHubSyncService:
 
             except GithubException:
                 # Create new settings file
-                self.repo.create_file(
+                self._repo.create_file(
                     path=filepath,
                     message="Add application settings",
                     content=content
@@ -355,20 +377,12 @@ class GitHubSyncService:
         Returns:
             Settings dictionary or None
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             return None
 
         try:
-            file_content = self.repo.get_contents("settings.json")
-
-            # Handle large files (>1MB)
-            if file_content.encoding is None or file_content.encoding == 'none':
-                headers = {'Authorization': f'token {self.token}'}
-                response = requests.get(file_content.download_url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = response.text
-            else:
-                content = base64.b64decode(file_content.content).decode('utf-8')
+            file_content = self._repo.get_contents("settings.json")
+            content = base64.b64decode(file_content.content).decode('utf-8')
             settings = json.loads(content)
 
             logger.info("Settings retrieved from GitHub")
@@ -389,11 +403,11 @@ class GitHubSyncService:
             True if connection is working
         """
         try:
-            if not self.github:
+            if not self._github:
                 return False
 
             # Try to get user info
-            user = self.github.get_user()
+            user = self._github.get_user()
             return user is not None
 
         except Exception as e:
@@ -407,7 +421,7 @@ class GitHubSyncService:
         Returns:
             Storage usage stats
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             return {}
 
         try:
@@ -439,7 +453,7 @@ class GitHubSyncService:
         Returns:
             True if successful
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             logger.warning("GitHub sync not enabled")
             return False
 
@@ -448,19 +462,19 @@ class GitHubSyncService:
 
             try:
                 # Try to update existing file
-                existing_file = self.repo.get_contents(LATEST_SYNC_FILE)
-                result = self.repo.update_file(
+                existing_file = self._repo.get_contents(LATEST_SYNC_FILE)
+                self._repo.update_file(
                     path=LATEST_SYNC_FILE,
                     message="Sync clipboard data",
                     content=content,
                     sha=existing_file.sha
                 )
-                self._last_sync_sha = result['content'].sha
+                self._last_sync_sha = existing_file.sha
                 logger.debug(f"Updated sync file: {LATEST_SYNC_FILE}")
 
             except GithubException:
                 # Create new file (first time)
-                result = self.repo.create_file(
+                result = self._repo.create_file(
                     path=LATEST_SYNC_FILE,
                     message="Initial clipboard sync",
                     content=content
@@ -481,28 +495,20 @@ class GitHubSyncService:
         Returns:
             Data dict or None if no changes/error
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             logger.debug("GitHub sync not enabled")
             return None
 
         try:
-            file_content = self.repo.get_contents(LATEST_SYNC_FILE)
+            file_content = self._repo.get_contents(LATEST_SYNC_FILE)
 
             # Check if file has changed since last pull
             if self._last_sync_sha and file_content.sha == self._last_sync_sha:
                 logger.debug("No changes detected (same SHA)")
                 return None
 
-            # Handle large files (>1MB) - GitHub returns encoding: none
-            if file_content.encoding is None or file_content.encoding == 'none':
-                logger.debug(f"Large sync file detected ({file_content.size} bytes), using download_url")
-                headers = {'Authorization': f'token {self.token}'}
-                response = requests.get(file_content.download_url, headers=headers, timeout=30)
-                response.raise_for_status()
-                content = response.text
-            else:
-                # Decode and parse content
-                content = base64.b64decode(file_content.content).decode('utf-8')
+            # Decode and parse content
+            content = base64.b64decode(file_content.content).decode('utf-8')
             data = json.loads(content)
 
             # Update last known SHA
@@ -529,11 +535,11 @@ class GitHubSyncService:
         Returns:
             True if updates are available
         """
-        if not self.enabled or not self.repo:
+        if not self._enabled or not self._repo:
             return False
 
         try:
-            file_content = self.repo.get_contents(LATEST_SYNC_FILE)
+            file_content = self._repo.get_contents(LATEST_SYNC_FILE)
 
             if self._last_sync_sha is None:
                 # First check, updates available
@@ -598,3 +604,92 @@ class GitHubSyncService:
         self._last_sync_sha = None
         self._known_hashes.clear()
         logger.info("Sync state reset")
+
+    # =====================================================
+    # File Operations (used by ArchiveManager)
+    # =====================================================
+
+    def upload_file(self, filepath: str, content: str, message: str) -> bool:
+        """
+        Upload or update a file in the repository.
+
+        Args:
+            filepath: Path within the repository
+            content: File content
+            message: Commit message
+
+        Returns:
+            True if successful
+        """
+        if not self._enabled or not self._repo:
+            return False
+
+        try:
+            try:
+                existing = self._repo.get_contents(filepath)
+                self._repo.update_file(
+                    path=filepath, message=message,
+                    content=content, sha=existing.sha
+                )
+            except GithubException:
+                self._repo.create_file(
+                    path=filepath, message=message, content=content
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to upload file {filepath}: {e}")
+            return False
+
+    def delete_file(self, filepath: str, message: str) -> bool:
+        """
+        Delete a file from the repository.
+
+        Args:
+            filepath: Path within the repository
+            message: Commit message
+
+        Returns:
+            True if successful
+        """
+        if not self._enabled or not self._repo:
+            return False
+
+        try:
+            file_content = self._repo.get_contents(filepath)
+            self._repo.delete_file(
+                path=filepath, message=message, sha=file_content.sha
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete file {filepath}: {e}")
+            return False
+
+    def list_folder(self, folder_path: str) -> List[Dict[str, Any]]:
+        """
+        List files in a repository folder.
+
+        Args:
+            folder_path: Folder path within the repository
+
+        Returns:
+            List of file metadata dicts
+        """
+        if not self._enabled or not self._repo:
+            return []
+
+        try:
+            contents = self._repo.get_contents(folder_path)
+            return [
+                {
+                    'name': f.name,
+                    'path': f.path,
+                    'size': f.size,
+                    'sha': f.sha,
+                }
+                for f in contents
+            ]
+        except GithubException:
+            return []
+        except Exception as e:
+            logger.error(f"Failed to list folder {folder_path}: {e}")
+            return []

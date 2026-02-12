@@ -83,13 +83,9 @@ if os.name == 'nt':
         'win32api',
         'win32clipboard',
         'pywintypes',
-        'pystray._win32',
     ]
 
 hiddenimports += [
-    # System tray
-    'pystray',
-
     # Images
     'PIL',
     'PIL.Image',
@@ -114,15 +110,16 @@ hiddenimports += [
     'github',
     'github.MainClass',
 
-    # Utils
-    'darkdetect',
-
     # Our modules
     'src',
     'src.core',
+    'src.core.exceptions',
+    'src.core.interfaces',
     'src.core.clipboard',
     'src.core.storage',
     'src.services',
+    'src.services.component_factory',
+    'src.services.sync_coordinator',
     'src.services.archive_manager',
     'src.services.sync',
     'src.services.sync.github_sync',

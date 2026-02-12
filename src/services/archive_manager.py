@@ -97,26 +97,15 @@ class ArchiveManager:
             filepath = f"archives/{filename}"
             content = json.dumps(data, indent=2)
 
-            # Check if file exists (shouldn't normally)
-            try:
-                existing_file = self.github_sync.repo.get_contents(filepath)
-                # Update existing file
-                self.github_sync.repo.update_file(
-                    path=filepath,
-                    message=f"Update archive: {filename}",
-                    content=content,
-                    sha=existing_file.sha
-                )
-            except Exception:
-                # Create new file
-                self.github_sync.repo.create_file(
-                    path=filepath,
-                    message=f"Create archive: {filename}",
-                    content=content
-                )
+            success = self.github_sync.upload_file(
+                filepath=filepath,
+                content=content,
+                message=f"Archive: {filename}"
+            )
 
-            logger.debug(f"Uploaded archive to GitHub: {filename}")
-            return True
+            if success:
+                logger.debug(f"Uploaded archive to GitHub: {filename}")
+            return success
 
         except Exception as e:
             logger.error(f"Failed to upload archive to GitHub: {e}")
@@ -170,31 +159,27 @@ class ArchiveManager:
         deleted_count = 0
 
         try:
-            # Get archive folder contents
-            try:
-                contents = self.github_sync.repo.get_contents("archives")
-            except Exception:
-                # Archives folder doesn't exist
+            files = self.github_sync.list_folder("archives")
+            if not files:
                 return 0
 
-            for file in contents:
-                if file.name.startswith('archive_') and file.name.endswith('.json'):
-                    # Parse timestamp from filename (archive_YYYYMMDD_HHMMSS.json)
+            for file_info in files:
+                name = file_info['name']
+                if name.startswith('archive_') and name.endswith('.json'):
                     try:
-                        date_part = file.name[8:16]  # Extract YYYYMMDD
+                        date_part = name[8:16]  # Extract YYYYMMDD
                         file_date = datetime.strptime(date_part, '%Y%m%d')
 
                         if file_date < cutoff_date:
-                            # Delete the file
-                            self.github_sync.repo.delete_file(
-                                path=file.path,
-                                message=f"Delete expired archive: {file.name}",
-                                sha=file.sha
+                            success = self.github_sync.delete_file(
+                                filepath=file_info['path'],
+                                message=f"Delete expired archive: {name}"
                             )
-                            deleted_count += 1
-                            logger.debug(f"Deleted expired GitHub archive: {file.name}")
+                            if success:
+                                deleted_count += 1
+                                logger.debug(f"Deleted expired GitHub archive: {name}")
                     except Exception as e:
-                        logger.debug(f"Could not parse date from {file.name}: {e}")
+                        logger.debug(f"Could not parse date from {name}: {e}")
 
         except Exception as e:
             logger.error(f"Error cleaning GitHub archives: {e}")
@@ -312,7 +297,7 @@ class ArchiveManager:
                         with open(file_path, 'r', encoding='utf-8') as f:
                             data = json.load(f)
                             stats['total_entries'] += data.get('entry_count', 0)
-                    except (json.JSONDecodeError, OSError):
+                    except Exception:
                         pass
 
             if archives:
