@@ -1,13 +1,11 @@
 """Sync coordinator for managing all GitHub sync operations (SRP extraction)"""
 
 import threading
-from typing import Optional
 from loguru import logger
 
 from src.core.clipboard.history import ClipboardHistory, ClipboardEntry
 from src.core.interfaces import EncryptionStrategy, SyncBackend
 from src.core.storage.repository_improved import ClipboardRepository
-from src.services.auto_sync_service import AutoSyncService
 
 
 class SyncCoordinator:
@@ -86,9 +84,10 @@ class SyncCoordinator:
                         category=entry_data.get('category') or 'text',
                         metadata=entry_data.get('metadata', {})
                     )
-                    self._repository.save_entry(entry)
-                    self._history.add_entry(entry.content, entry.timestamp)
-                    loaded_count += 1
+                    saved = self._repository.save_entry(entry)
+                    if saved:
+                        self._history.import_entry(entry)
+                        loaded_count += 1
                 except Exception as e:
                     logger.error(f"Failed to load entry: {e}")
 
@@ -146,7 +145,9 @@ class SyncCoordinator:
                 for e in remote_entries if e.get('content_hash')
             }
 
-            local_entries = self._history.get_entries()
+            local_entries = self._repository.get_entries(limit=self._get_sync_limit())
+            if not local_entries:
+                local_entries = self._history.get_entries(limit=self._get_sync_limit())
             local_by_hash = {e.content_hash: e for e in local_entries}
 
             local_only_hashes = set(local_by_hash.keys()) - set(remote_by_hash.keys())
@@ -181,7 +182,11 @@ class SyncCoordinator:
 
             # Refresh UI if viewer is open
             if history_viewer:
-                history_viewer._load_entries()
+                if hasattr(history_viewer, "refresh_entries"):
+                    history_viewer.refresh_entries()
+                elif hasattr(history_viewer, "_load_entries"):
+                    # Backward compatibility with older viewers
+                    history_viewer._load_entries()
 
         except Exception as e:
             logger.error(f"Pull and merge failed: {e}")
@@ -210,12 +215,26 @@ class SyncCoordinator:
 
         threading.Thread(target=sync_task, daemon=True).start()
 
+    def _get_sync_limit(self) -> int:
+        """Resolve sync entry limit from config with sane fallback."""
+        default_limit = 500
+        if not self._config_getter:
+            return default_limit
+        try:
+            settings = self._config_getter() or {}
+            clipboard_settings = settings.get('clipboard', {})
+            value = int(clipboard_settings.get('max_history_size', default_limit))
+            return max(1, value)
+        except Exception:
+            return default_limit
+
     def _build_sync_payload(self) -> dict:
-        """Build the data payload for sync (latest 500 entries from DB)"""
+        """Build the data payload for sync using configured history size limit."""
+        sync_limit = self._get_sync_limit()
         # Prefer DB entries (persistent) over in-memory history
-        entries = self._repository.get_entries(limit=500)
+        entries = self._repository.get_entries(limit=sync_limit)
         if not entries:
-            entries = self._history.get_entries(limit=500)
+            entries = self._history.get_entries(limit=sync_limit)
 
         payload = {
             'entries': [e.to_dict() for e in entries],

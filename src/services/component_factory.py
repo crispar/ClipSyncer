@@ -1,14 +1,11 @@
 """Component factory for creating and wiring application components (SRP extraction)"""
 
-import os
-import yaml
 from typing import Optional
 from loguru import logger
 
 from src.core.clipboard import ClipboardMonitor, ClipboardHistory
 from src.core.encryption import EncryptionManager, KeyManager
 from src.core.storage import DatabaseManager, ClipboardRepository
-from src.core.exceptions import ConfigurationError
 from src.services import GitHubSyncService, CleanupService
 from src.services.cleanup.cleanup_service import (
     DuplicateRemover, OldDataCleaner, DatabaseOptimizer
@@ -106,33 +103,10 @@ class ComponentFactory:
 
         return cleanup_service
 
-    @staticmethod
-    def load_github_settings() -> dict:
-        """Load GitHub settings from dedicated file and keyring"""
+    def load_github_settings(self) -> dict:
+        """Load GitHub settings via unified configuration manager."""
         try:
-            config_path = os.path.join(
-                os.environ.get('APPDATA', '.'),
-                'ClipboardHistory',
-                'github_settings.yaml'
-            )
-
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    settings = yaml.safe_load(f) or {}
-                    github_settings = settings.get('github', {})
-
-                    # Load token from keyring (secure storage)
-                    try:
-                        key_manager = KeyManager()
-                        token = key_manager.get_github_token()
-                        if token:
-                            github_settings['token'] = token
-                            logger.debug("Loaded GitHub token from secure keyring")
-                    except Exception as e:
-                        logger.warning(f"Could not load GitHub token from keyring: {e}")
-
-                    return github_settings
+            return self.config.get_github_settings()
         except Exception as e:
             logger.error(f"Failed to load GitHub settings: {e}")
-
-        return {}
+            return {}

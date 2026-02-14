@@ -3,6 +3,8 @@
 import os
 import yaml
 import pytest
+from pathlib import Path
+from unittest.mock import patch
 
 from src.utils.config_manager import ConfigManager
 
@@ -188,3 +190,35 @@ class TestConfigManagerGetAll:
         # Should contain all top-level sections
         expected_keys = {'clipboard', 'encryption', 'storage', 'github', 'cleanup', 'ui', 'logging'}
         assert expected_keys.issubset(set(all_config.keys()))
+
+    def test_get_all_returns_deep_copy(self, config_with_defaults):
+        all_config = config_with_defaults.get_all()
+        all_config['clipboard']['check_interval'] = 9999
+        assert config_with_defaults.get('clipboard.check_interval') != 9999
+
+
+class TestGitHubSettingsPersistence:
+    """Tests for dedicated GitHub settings persistence path."""
+
+    @patch("src.core.encryption.KeyManager")
+    def test_save_github_settings_stores_token_in_keyring_only(self, mock_key_manager, config_with_defaults):
+        mock_instance = mock_key_manager.return_value
+        mock_instance.store_github_token.return_value = True
+
+        ok = config_with_defaults.save_github_settings(
+            settings={
+                'enabled': True,
+                'repository': 'https://github.com/user/repo.git',
+                'enterprise_url': None,
+            },
+            token='ghp_secret_token'
+        )
+        assert ok is True
+
+        github_config_path = Path(config_with_defaults.config_path).parent / "github_settings.yaml"
+        with open(github_config_path, 'r', encoding='utf-8') as f:
+            saved = yaml.safe_load(f) or {}
+
+        assert saved['github']['repository'] == 'user/repo'
+        assert 'token' not in saved['github']
+        mock_instance.store_github_token.assert_called_once_with('ghp_secret_token')

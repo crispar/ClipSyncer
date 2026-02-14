@@ -9,8 +9,8 @@ from qfluentwidgets import (
     SubtitleLabel
 )
 from loguru import logger
-import yaml
 import os
+from src.utils import ConfigManager
 
 
 class AppSettingsDialog(QDialog):
@@ -74,11 +74,8 @@ class AppSettingsDialog(QDialog):
     def _load_current_settings(self) -> dict:
         """Load current settings from config"""
         try:
-            if os.path.exists(self._config_path):
-                with open(self._config_path, 'r', encoding='utf-8') as f:
-                    settings = yaml.safe_load(f) or {}
-                    return settings
-
+            cm = ConfigManager(self._config_path)
+            return cm.get_all()
         except Exception as e:
             logger.error(f"Failed to load settings: {e}")
 
@@ -236,46 +233,27 @@ class AppSettingsDialog(QDialog):
     def _save_settings(self):
         """Save settings to config file"""
         try:
-            # Load existing settings
-            settings = {}
-            if os.path.exists(self._config_path):
-                with open(self._config_path, 'r', encoding='utf-8') as f:
-                    settings = yaml.safe_load(f) or {}
+            cm = ConfigManager(self._config_path)
 
             # Update UI settings
-            if 'ui' not in settings:
-                settings['ui'] = {}
-            settings['ui']['show_notifications'] = self.notifications_switch.isChecked()
+            cm.set('ui.show_notifications', self.notifications_switch.isChecked())
             theme_map = {0: 'auto', 1: 'light', 2: 'dark'}
-            settings['ui']['theme'] = theme_map.get(self.theme_combo.currentIndex(), 'auto')
+            cm.set('ui.theme', theme_map.get(self.theme_combo.currentIndex(), 'auto'))
 
             # Update clipboard settings
-            if 'clipboard' not in settings:
-                settings['clipboard'] = {}
-            settings['clipboard']['check_interval'] = self.interval_spin.value()
-            settings['clipboard']['max_history_size'] = self.history_size_spin.value()
+            cm.set('clipboard.check_interval', self.interval_spin.value())
+            cm.set('clipboard.max_history_size', self.history_size_spin.value())
 
             # Update storage settings
-            if 'storage' not in settings:
-                settings['storage'] = {}
-            settings['storage']['retention_days'] = self.retention_spin.value()
+            cm.set('storage.retention_days', self.retention_spin.value())
 
-            # Strip sensitive data before saving
-            safe_settings = settings.copy()
-            if 'github' in safe_settings:
-                safe_settings['github'] = {
-                    k: v for k, v in safe_settings['github'].items() if k != 'token'
-                }
-
-            # Save to file
-            os.makedirs(os.path.dirname(self._config_path), exist_ok=True)
-            with open(self._config_path, 'w', encoding='utf-8') as f:
-                yaml.dump(safe_settings, f, default_flow_style=False)
+            if not cm.save():
+                raise RuntimeError("Config save returned False")
 
             logger.info(f"App settings saved")
 
             # Emit signal with updated settings
-            self.settings_saved.emit(settings)
+            self.settings_saved.emit(cm.get_all())
 
             # Close dialog
             self.accept()

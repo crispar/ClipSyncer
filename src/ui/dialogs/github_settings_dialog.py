@@ -10,8 +10,7 @@ from qfluentwidgets import (
     MessageBox, StateToolTip, FluentIcon as FIF, isDarkTheme, setTheme, Theme
 )
 from loguru import logger
-import yaml
-import os
+from src.utils import ConfigManager
 
 
 class GitHubSettingsDialog(QDialog):
@@ -29,6 +28,9 @@ class GitHubSettingsDialog(QDialog):
 
         # Apply theme-aware styling
         self._apply_theme_style()
+
+        # Unified configuration access
+        self._config_manager = ConfigManager()
 
         # Load current settings
         self.current_settings = self._load_current_settings()
@@ -97,17 +99,7 @@ class GitHubSettingsDialog(QDialog):
     def _load_current_settings(self) -> dict:
         """Load current GitHub settings from config"""
         try:
-            config_path = os.path.join(
-                os.environ.get('APPDATA', '.'),
-                'ClipboardHistory',
-                'github_settings.yaml'
-            )
-
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    settings = yaml.safe_load(f) or {}
-                    return settings.get('github', {})
-
+            return self._config_manager.get_github_settings()
         except Exception as e:
             logger.error(f"Failed to load GitHub settings: {e}")
 
@@ -428,19 +420,6 @@ class GitHubSettingsDialog(QDialog):
                 )
                 return
 
-        # Store token securely in keyring (not in YAML file)
-        if not self._key_manager.store_github_token(token):
-            InfoBar.error(
-                title="Token Storage Error",
-                content="Failed to store token securely. Please try again.",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP,
-                duration=5000,
-                parent=self
-            )
-            return
-
         # Save settings WITHOUT token (token is in keyring)
         settings = {
             'github': {
@@ -454,18 +433,12 @@ class GitHubSettingsDialog(QDialog):
         }
 
         try:
-            # Create config directory if it doesn't exist
-            config_dir = os.path.join(
-                os.environ.get('APPDATA', '.'),
-                'ClipboardHistory'
-            )
-            os.makedirs(config_dir, exist_ok=True)
-
-            # Save to file (token is NOT included - stored in keyring)
-            config_path = os.path.join(config_dir, 'github_settings.yaml')
-
-            with open(config_path, 'w') as f:
-                yaml.safe_dump(settings, f)
+            # Save via unified configuration manager.
+            if not self._config_manager.save_github_settings(
+                settings=settings['github'],
+                token=token
+            ):
+                raise RuntimeError("Failed to persist GitHub settings")
 
             # Emit signal with new settings (include token for in-memory use)
             emit_settings = settings['github'].copy()

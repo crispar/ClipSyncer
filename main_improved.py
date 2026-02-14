@@ -4,6 +4,7 @@ import sys
 import os
 import signal
 import threading
+import hashlib
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer, pyqtSignal, QObject
@@ -232,10 +233,13 @@ class ClipboardHistoryApp:
                 except Exception as e:
                     logger.error(f"Failed to archive overflow entry: {e}")
 
-            if added:
-                entries = self.clipboard_history.get_entries(limit=1)
-                if entries:
-                    self.repository.save_entry(entries[0])
+            latest_entry = None
+            entries = self.clipboard_history.get_entries(limit=1)
+            if entries:
+                latest_entry = entries[0]
+
+            if added and latest_entry:
+                self.repository.save_entry(latest_entry)
 
                 if self.auto_sync:
                     self.auto_sync.trigger_push()
@@ -247,6 +251,14 @@ class ClipboardHistoryApp:
                     )
 
                 logger.debug(f"Clipboard content saved: {len(content)} characters")
+            elif content and latest_entry:
+                # Duplicate content updates timestamp in memory; persist timestamp refresh to DB.
+                expected_hash = hashlib.sha256(content.encode()).hexdigest()
+                if latest_entry.content_hash == expected_hash:
+                    self.repository.save_entry(latest_entry)
+                    if self.auto_sync:
+                        self.auto_sync.trigger_push()
+                    logger.debug(f"Clipboard duplicate timestamp refreshed: {expected_hash[:8]}")
 
         except Exception as e:
             logger.error(f"Error handling clipboard change: {e}")
@@ -369,7 +381,10 @@ class ClipboardHistoryApp:
     def _refresh_history_viewer(self):
         """Refresh history viewer (thread-safe, called via signal)"""
         if self.history_viewer and self.history_viewer.isVisible():
-            self.history_viewer._load_entries()
+            if hasattr(self.history_viewer, "refresh_entries"):
+                self.history_viewer.refresh_entries()
+            else:
+                self.history_viewer._load_entries()
 
     def _show_notification(self, title: str, message: str):
         """Show notification"""

@@ -248,14 +248,20 @@ class ClipboardHistory:
                 logger.debug(f"Skipped duplicate import: {entry.content_hash[:8]}")
                 return False
 
-            # Add to history
-            self._entries.append(entry)
+            # Insert entry to keep newest-first ordering by timestamp
+            insert_idx = 0
+            while (
+                insert_idx < len(self._entries)
+                and self._entries[insert_idx].timestamp >= entry.timestamp
+            ):
+                insert_idx += 1
+            self._entries.insert(insert_idx, entry)
             self._hash_index[entry.content_hash] = entry
 
             # Enforce max size
             while len(self._entries) > self.max_size:
-                removed = self._entries.pop(0)  # Remove oldest (at start after append)
-                del self._hash_index[removed.content_hash]
+                removed = self._entries.pop()  # Remove oldest (end in newest-first order)
+                self._hash_index.pop(removed.content_hash, None)
 
         logger.debug(f"Imported entry: {entry.content_hash[:8]}")
         return True
@@ -345,6 +351,10 @@ class ClipboardHistory:
                 entry = ClipboardEntry.from_dict(entry_data)
                 self._entries.append(entry)
                 self._hash_index[entry.content_hash] = entry
+
+            # Keep internal ordering invariant (newest first)
+            self._entries.sort(key=lambda e: e.timestamp, reverse=True)
+            self._rebuild_hash_index()
 
         logger.info(f"Imported {len(self._entries)} entries from JSON")
 

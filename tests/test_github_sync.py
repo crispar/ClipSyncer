@@ -72,6 +72,7 @@ class TestUploadBackup:
         result = sync_service.upload_backup(data)
         assert result is True
         mock_github['repo'].update_file.assert_called_once()
+        assert mock_github['repo'].update_file.call_args.kwargs['path'] == "backups/clipboard_sync.json"
 
     def test_upload_creates_new_file(self, sync_service, mock_github):
         """Should create file when it doesn't exist"""
@@ -85,6 +86,18 @@ class TestUploadBackup:
         result = sync_service.upload_backup(data)
         assert result is True
         mock_github['repo'].create_file.assert_called_once()
+        assert mock_github['repo'].create_file.call_args.kwargs['path'] == "backups/clipboard_sync.json"
+
+    def test_upload_uses_custom_filename(self, sync_service, mock_github):
+        data = {"entries": [{"content": "custom"}]}
+        mock_file = MagicMock()
+        mock_file.sha = "abc123"
+        mock_github['repo'].get_contents.return_value = mock_file
+
+        result = sync_service.upload_backup(data, filename="daily_20260214.json")
+        assert result is True
+        mock_github['repo'].get_contents.assert_called_with("backups/daily_20260214.json")
+        assert mock_github['repo'].update_file.call_args.kwargs['path'] == "backups/daily_20260214.json"
 
     def test_upload_disabled_service(self, mock_github):
         """Should return False when service is disabled"""
@@ -109,6 +122,21 @@ class TestDownloadBackup:
 
         result = sync_service.download_backup()
         assert result == data
+        mock_github['repo'].get_contents.assert_called_with("backups/clipboard_sync.json")
+
+    def test_download_uses_custom_filename(self, sync_service, mock_github):
+        data = {"entries": [{"content": "from_custom"}]}
+        content = json.dumps(data)
+
+        mock_file = MagicMock()
+        mock_file.decoded_content = content.encode('utf-8')
+        mock_file.size = len(content)
+        mock_file.encoding = "base64"
+        mock_github['repo'].get_contents.return_value = mock_file
+
+        result = sync_service.download_backup("manual_backup.json")
+        assert result == data
+        mock_github['repo'].get_contents.assert_called_with("backups/manual_backup.json")
 
     def test_download_file_not_found(self, sync_service, mock_github):
         """Should return None when file doesn't exist"""

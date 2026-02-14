@@ -2,6 +2,7 @@
 
 import os
 import yaml
+import copy
 from pathlib import Path
 from typing import Dict, Any, Optional
 from loguru import logger
@@ -105,10 +106,73 @@ class ConfigManager:
         # Also load GitHub-specific settings (saved by GitHubSettingsDialog)
         self._load_github_settings()
 
+    @property
+    def github_config_path(self) -> Path:
+        """Path to dedicated GitHub settings file."""
+        return Path(self.config_path).parent / 'github_settings.yaml'
+
+    @staticmethod
+    def _normalize_repository(repo: str) -> str:
+        """Normalize GitHub repository value to username/repo form when possible."""
+        if not repo:
+            return repo
+        normalized = repo.strip().rstrip('/')
+        if normalized.startswith('https://github.com/'):
+            normalized = normalized.replace('https://github.com/', '')
+        if normalized.endswith('.git'):
+            normalized = normalized[:-4]
+        return normalized
+
+    def get_github_settings(self) -> Dict[str, Any]:
+        """Return merged GitHub settings currently loaded in memory."""
+        return copy.deepcopy(self.config.get('github', {}))
+
+    def save_github_settings(self, settings: Dict[str, Any], token: Optional[str] = None) -> bool:
+        """
+        Save GitHub settings to dedicated file and secure token storage.
+
+        Args:
+            settings: GitHub settings dictionary (without top-level 'github')
+            token: Optional GitHub token to store in keyring
+        """
+        try:
+            github_settings = copy.deepcopy(settings or {})
+            github_settings['repository'] = self._normalize_repository(
+                github_settings.get('repository', '')
+            )
+
+            # Persist token only in keyring
+            if token is None and github_settings.get('token'):
+                token = github_settings.get('token')
+            github_settings.pop('token', None)
+
+            if token:
+                from src.core.encryption import KeyManager
+                key_manager = KeyManager()
+                if not key_manager.store_github_token(token):
+                    logger.error("Failed to store GitHub token in keyring")
+                    return False
+
+            os.makedirs(Path(self.config_path).parent, exist_ok=True)
+            with open(self.github_config_path, 'w', encoding='utf-8') as f:
+                yaml.safe_dump({'github': github_settings}, f, default_flow_style=False)
+
+            if 'github' not in self.config:
+                self.config['github'] = {}
+            self._merge_config(self.config['github'], github_settings)
+            if token:
+                self.config['github']['token'] = token
+
+            logger.info(f"Saved GitHub settings to {self.github_config_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save GitHub settings: {e}")
+            return False
+
     def _load_github_settings(self):
         """Load GitHub settings from separate file and keyring"""
         try:
-            github_config_path = Path(self.config_path).parent / 'github_settings.yaml'
+            github_config_path = self.github_config_path
 
             if github_config_path.exists():
                 with open(github_config_path, 'r', encoding='utf-8') as f:
@@ -118,11 +182,9 @@ class ConfigManager:
                     github_settings = github_config['github']
 
                     # Normalize repository format (URL to username/repo)
-                    repo = github_settings.get('repository', '')
-                    if repo.startswith('https://github.com/'):
-                        repo = repo.replace('https://github.com/', '')
-                        repo = repo.rstrip('/').removesuffix('.git')
-                        github_settings['repository'] = repo
+                    github_settings['repository'] = self._normalize_repository(
+                        github_settings.get('repository', '')
+                    )
 
                     # Load token from keyring (secure storage)
                     try:
@@ -145,7 +207,7 @@ class ConfigManager:
                                     if 'github' in gh_cfg:
                                         gh_cfg['github'].pop('token', None)
                                     with open(github_config_path_str, 'w', encoding='utf-8') as gf:
-                                        yaml.dump(gh_cfg, gf, default_flow_style=False)
+                                        yaml.safe_dump(gh_cfg, gf, default_flow_style=False)
                                     logger.info("Removed plaintext token from github_settings.yaml")
                                 except Exception as migrate_err:
                                     logger.warning(f"Could not remove token from YAML: {migrate_err}")
@@ -184,7 +246,6 @@ class ConfigManager:
             os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
 
             # Create a copy and strip sensitive fields before saving
-            import copy
             safe_config = copy.deepcopy(self.config)
             if 'github' in safe_config:
                 safe_config['github'].pop('token', None)
@@ -244,7 +305,7 @@ class ConfigManager:
 
     def get_all(self) -> Dict[str, Any]:
         """Get entire configuration"""
-        return self.config.copy()
+        return copy.deepcopy(self.config)
 
     def reload(self):
         """Reload configuration from file"""

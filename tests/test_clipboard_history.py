@@ -270,6 +270,24 @@ class TestClipboardHistory:
         assert "imported" in contents
         assert "existing" in contents
 
+    def test_import_entry_keeps_newest_first_ordering(self):
+        history = ClipboardHistory(max_size=10)
+        older = ClipboardEntry(
+            content="older",
+            timestamp=datetime(2026, 2, 1, 10, 0, 0),
+            content_hash=ClipboardEntry.calculate_hash("older")
+        )
+        newer = ClipboardEntry(
+            content="newer",
+            timestamp=datetime(2026, 2, 2, 10, 0, 0),
+            content_hash=ClipboardEntry.calculate_hash("newer")
+        )
+        history.import_entry(older)
+        history.import_entry(newer)
+        entries = history.get_entries()
+        assert entries[0].content == "newer"
+        assert entries[1].content == "older"
+
     def test_remove_entry(self, clipboard_history):
         clipboard_history.add_entry("to_remove")
         entry = clipboard_history.get_entries()[0]

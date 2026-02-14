@@ -310,6 +310,10 @@ class ModernHistoryViewer(QMainWindow):
                 parent=self
             )
 
+    def refresh_entries(self):
+        """Public refresh API used by coordinators/main app."""
+        self._load_entries()
+
     def _check_for_updates(self):
         """Check for new clipboard entries and refresh if needed"""
         try:

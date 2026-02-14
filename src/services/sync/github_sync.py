@@ -14,6 +14,12 @@ from src.core.interfaces import SyncBackend
 
 # Constants for real-time sync
 LATEST_SYNC_FILE = "sync/latest.json"  # Single file for real-time sync
+DEFAULT_BACKUP_FILE = "backups/clipboard_sync.json"
+
+try:
+    from github import Auth as GithubAuth
+except Exception:  # pragma: no cover - compatibility fallback for older PyGithub
+    GithubAuth = None
 
 
 class GitHubSyncService(SyncBackend):
@@ -69,9 +75,15 @@ class GitHubSyncService(SyncBackend):
             if self.enterprise_url:
                 api_url = f"{self.enterprise_url.rstrip('/')}/api/v3"
                 logger.info(f"Connecting to GitHub Enterprise at: {api_url}")
-                self._github = Github(base_url=api_url, login_or_token=self._token)
+                if GithubAuth:
+                    self._github = Github(base_url=api_url, auth=GithubAuth.Token(self._token))
+                else:
+                    self._github = Github(base_url=api_url, login_or_token=self._token)
             else:
-                self._github = Github(self._token)
+                if GithubAuth:
+                    self._github = Github(auth=GithubAuth.Token(self._token))
+                else:
+                    self._github = Github(self._token)
 
             # Verify token by getting user
             user = self._github.get_user()
@@ -144,13 +156,27 @@ class GitHubSyncService(SyncBackend):
                         logger.debug(f"Retry to get existing repo also failed: {retry_error}")
                 return None
 
+    def _resolve_backup_path(self, filename: Optional[str]) -> str:
+        """Resolve backup filename/path while preserving backward compatibility."""
+        if not filename:
+            return DEFAULT_BACKUP_FILE
+
+        normalized = filename.strip().replace("\\", "/")
+        if not normalized:
+            return DEFAULT_BACKUP_FILE
+        if normalized.startswith("backups/"):
+            return normalized
+        if "/" in normalized:
+            return normalized
+        return f"backups/{normalized}"
+
     def upload_backup(self, data: Dict[str, Any], filename: Optional[str] = None) -> bool:
         """
-        Upload encrypted backup to GitHub (always uses single file for sync)
+        Upload encrypted backup to GitHub.
 
         Args:
             data: Data to upload (should be encrypted)
-            filename: Ignored - always uses clipboard_sync.json
+            filename: Optional backup filename/path. If omitted, uses default.
 
         Returns:
             True if successful
@@ -160,8 +186,7 @@ class GitHubSyncService(SyncBackend):
             return False
 
         try:
-            # Always use the same file for sync (Primary Storage mode)
-            filepath = "backups/clipboard_sync.json"
+            filepath = self._resolve_backup_path(filename)
 
             # Convert data to JSON
             content = json.dumps(data, indent=2)
@@ -173,7 +198,7 @@ class GitHubSyncService(SyncBackend):
                 # Update existing file
                 self._repo.update_file(
                     path=filepath,
-                    message="Update clipboard sync data",
+                    message=f"Update backup: {filepath}",
                     content=content,
                     sha=existing_file.sha
                 )
@@ -183,7 +208,7 @@ class GitHubSyncService(SyncBackend):
                 # Create new file
                 self._repo.create_file(
                     path=filepath,
-                    message="Initial clipboard sync data",
+                    message=f"Create backup: {filepath}",
                     content=content
                 )
                 logger.info(f"Created new backup file: {filepath}")
@@ -196,10 +221,10 @@ class GitHubSyncService(SyncBackend):
 
     def download_backup(self, filename: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Download backup from GitHub (always uses single file for sync)
+        Download backup from GitHub.
 
         Args:
-            filename: Ignored - always uses clipboard_sync.json
+            filename: Optional backup filename/path. If omitted, uses default.
 
         Returns:
             Backup data or None
@@ -209,8 +234,7 @@ class GitHubSyncService(SyncBackend):
             return None
 
         try:
-            # Always use the same file for sync (Primary Storage mode)
-            filepath = "backups/clipboard_sync.json"
+            filepath = self._resolve_backup_path(filename)
             file_content = self._repo.get_contents(filepath)
 
             # Handle large files (>1MB) - GitHub returns encoding: none
@@ -236,7 +260,7 @@ class GitHubSyncService(SyncBackend):
 
         except GithubException as e:
             if e.status == 404:
-                logger.debug(f"Backup file not found: backups/clipboard_sync.json")
+                logger.debug(f"Backup file not found: {filepath}")
             else:
                 logger.error(f"GitHub API error: {e}")
             return None
