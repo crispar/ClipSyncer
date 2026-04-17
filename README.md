@@ -100,6 +100,8 @@ storage:
 github:
   enabled: false
   repository: ""         # format: username/repo
+  ca_bundle_path: ""     # optional corporate root CA (.crt/.pem) for MITM proxies
+  verify_ssl: true       # set to false ONLY as a last resort in closed networks
 
 cleanup:
   duplicate_removal: true
@@ -117,6 +119,34 @@ python build.py
 ```
 
 Output: `dist/ClipSyncer.exe`
+
+## Corporate Networks (TLS inspection)
+
+If your workplace uses an HTTPS MITM proxy (Zscaler, Bluecoat, corporate TLS
+inspection, etc.), GitHub sync may fail with:
+
+```
+Failed to download backup: Could not find a suitable TLS CA certificate bundle, invalid path:
+```
+
+Fix it by pointing ClipSyncer at your corporate root CA:
+
+1. Export the corporate root CA from Windows's Trusted Root Certification
+   Authorities store as a `.crt` / `.pem` file (ask IT if unsure).
+2. Open **GitHub Sync Settings** in ClipSyncer and set **Corporate CA bundle**
+   to that file (or click **Browse...**).
+3. Click **Test Connection** to verify.
+
+Alternatively, set the `REQUESTS_CA_BUNDLE` or `SSL_CERT_FILE` environment
+variable before launching, or edit `%APPDATA%/ClipboardHistory/github_settings.yaml`:
+
+```yaml
+github:
+  ca_bundle_path: "C:/corp/ca-bundle.crt"
+  verify_ssl: true
+```
+
+Resolution order: `ca_bundle_path` → env vars → bundled `certifi` → system default.
 
 ## Security
 
