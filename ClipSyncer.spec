@@ -20,6 +20,13 @@ try:
 except:
     pass
 
+# Bundle certifi's root CA store so frozen builds on corporate Windows machines
+# don't hit "Could not find a suitable TLS CA certificate bundle, invalid path:".
+try:
+    datas += collect_data_files('certifi')
+except Exception:
+    pass
+
 # Explicitly collect qfluentwidgets submodules
 # hiddenimports += collect_submodules('qfluentwidgets') # Let PyInstaller find them or add manually if needed
 
@@ -109,6 +116,9 @@ hiddenimports += [
     # GitHub
     'github',
     'github.MainClass',
+
+    # TLS root CA store (critical for corporate MITM proxies)
+    'certifi',
 
     # Our modules
     'src',

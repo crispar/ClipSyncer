@@ -5,6 +5,7 @@ Pillow>=10.0.0             # Icon support for tray
 cryptography==42.0.5       # Encryption for data
 PyGithub==2.3.0           # GitHub integration
 watchdog==4.0.0           # File system monitoring
+certifi>=2024.2.2         # TLS root CA bundle (Mozilla store)
 
 # GUI dependencies
 PyQt6==6.7.1              # Modern GUI framework

@@ -299,7 +299,9 @@ class ClipboardHistoryApp:
             self.github_sync = GitHubSyncService(
                 token=settings.get('token'),
                 repository=settings.get('repository'),
-                enterprise_url=settings.get('enterprise_url')
+                enterprise_url=settings.get('enterprise_url'),
+                ca_bundle_path=settings.get('ca_bundle_path') or None,
+                verify_ssl=settings.get('verify_ssl', True),
             )
             logger.info("GitHub sync service reinitialized")
 
