@@ -1,9 +1,10 @@
 """GitHub synchronization service for encrypted clipboard backup"""
 
 import json
+import os
 import base64
 import requests
-from typing import Optional, Dict, Any, List, Set, Tuple
+from typing import Optional, Dict, Any, List, Set, Tuple, Union
 from datetime import datetime
 from github import Github, GithubException
 from loguru import logger
@@ -22,11 +23,52 @@ except Exception:  # pragma: no cover - compatibility fallback for older PyGithu
     GithubAuth = None
 
 
+def _resolve_verify(ca_bundle_path: Optional[str], verify_ssl: bool) -> Union[str, bool]:
+    """Resolve requests ``verify`` argument from user config.
+
+    Corporate Windows environments often run MITM proxies that require a custom
+    root CA. Users may also ship via PyInstaller, where certifi's ``cacert.pem``
+    path can be broken - causing urllib3 to raise
+    "Could not find a suitable TLS CA certificate bundle, invalid path:".
+
+    Resolution order:
+    1. Explicit ``ca_bundle_path`` if the file exists.
+    2. ``REQUESTS_CA_BUNDLE`` / ``SSL_CERT_FILE`` env vars if valid.
+    3. certifi's bundled cacert.pem (robust against broken PyInstaller paths).
+    4. ``True`` (system defaults) if ``verify_ssl`` is enabled, else ``False``.
+    """
+    if not verify_ssl:
+        return False
+
+    if ca_bundle_path:
+        expanded = os.path.expandvars(os.path.expanduser(str(ca_bundle_path)))
+        if os.path.isfile(expanded):
+            return expanded
+        logger.warning(f"Configured CA bundle not found: {expanded}")
+
+    for env_var in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE"):
+        env_path = os.environ.get(env_var)
+        if env_path and os.path.isfile(env_path):
+            return env_path
+
+    try:
+        import certifi
+        bundled = certifi.where()
+        if bundled and os.path.isfile(bundled):
+            return bundled
+    except Exception:
+        pass
+
+    return True
+
+
 class GitHubSyncService(SyncBackend):
     """Manages GitHub synchronization for clipboard data"""
 
     def __init__(self, token: Optional[str] = None, repository: Optional[str] = None,
-                 enterprise_url: Optional[str] = None):
+                 enterprise_url: Optional[str] = None,
+                 ca_bundle_path: Optional[str] = None,
+                 verify_ssl: bool = True):
         """
         Initialize GitHub sync service
 
@@ -34,10 +76,17 @@ class GitHubSyncService(SyncBackend):
             token: GitHub personal access token
             repository: Repository name (format: username/repo)
             enterprise_url: GitHub Enterprise URL (e.g., 'https://github.sec.samsung.net')
+            ca_bundle_path: Optional path to a custom CA bundle (PEM) for
+                corporate TLS inspection proxies
+            verify_ssl: If False, disable TLS verification (NOT recommended;
+                only as last resort in closed corporate networks)
         """
         self._token = token
         self.repository_name = repository
         self.enterprise_url = enterprise_url
+        self.ca_bundle_path = ca_bundle_path
+        self.verify_ssl = verify_ssl
+        self._verify = _resolve_verify(ca_bundle_path, verify_ssl)
         self._github = None
         self._repo = None
         self._enabled = False
@@ -45,6 +94,11 @@ class GitHubSyncService(SyncBackend):
         # Track last known state for incremental sync
         self._last_sync_sha: Optional[str] = None
         self._known_hashes: Set[str] = set()
+
+        if self._verify is False:
+            logger.warning("TLS verification disabled for GitHub sync - proceed at your own risk")
+        elif isinstance(self._verify, str):
+            logger.info(f"Using CA bundle for GitHub sync: {self._verify}")
 
         if token and repository:
             self.connect()
@@ -72,18 +126,28 @@ class GitHubSyncService(SyncBackend):
                 return False
 
             # Connect to GitHub Enterprise or regular GitHub
+            gh_kwargs: Dict[str, Any] = {'verify': self._verify}
             if self.enterprise_url:
                 api_url = f"{self.enterprise_url.rstrip('/')}/api/v3"
                 logger.info(f"Connecting to GitHub Enterprise at: {api_url}")
-                if GithubAuth:
-                    self._github = Github(base_url=api_url, auth=GithubAuth.Token(self._token))
-                else:
-                    self._github = Github(base_url=api_url, login_or_token=self._token)
+                gh_kwargs['base_url'] = api_url
+
+            if GithubAuth:
+                gh_kwargs['auth'] = GithubAuth.Token(self._token)
             else:
-                if GithubAuth:
-                    self._github = Github(auth=GithubAuth.Token(self._token))
-                else:
-                    self._github = Github(self._token)
+                gh_kwargs['login_or_token'] = self._token
+
+            try:
+                self._github = Github(**gh_kwargs)
+            except TypeError:
+                # Older PyGithub versions don't accept the ``verify`` kwarg.
+                gh_kwargs.pop('verify', None)
+                self._github = Github(**gh_kwargs)
+                logger.warning(
+                    "Installed PyGithub does not support the 'verify' kwarg; "
+                    "custom CA bundle will only apply to direct requests calls. "
+                    "Upgrade PyGithub to >=1.59 for full corporate CA support."
+                )
 
             # Verify token by getting user
             user = self._github.get_user()
@@ -242,7 +306,10 @@ class GitHubSyncService(SyncBackend):
                 # Use download_url for large files
                 logger.debug(f"Large file detected ({file_content.size} bytes), using download_url")
                 headers = {'Authorization': f'token {self._token}'}
-                response = requests.get(file_content.download_url, headers=headers, timeout=30)
+                response = requests.get(
+                    file_content.download_url, headers=headers, timeout=30,
+                    verify=self._verify,
+                )
                 response.raise_for_status()
                 content = response.text
             else:
@@ -525,7 +592,10 @@ class GitHubSyncService(SyncBackend):
             if file_content.encoding is None or file_content.encoding == 'none':
                 logger.debug(f"Large sync file detected ({file_content.size} bytes), using download_url")
                 headers = {'Authorization': f'token {self._token}'}
-                response = requests.get(file_content.download_url, headers=headers, timeout=30)
+                response = requests.get(
+                    file_content.download_url, headers=headers, timeout=30,
+                    verify=self._verify,
+                )
                 response.raise_for_status()
                 content = response.text
             else:

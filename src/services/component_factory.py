@@ -55,12 +55,20 @@ class ComponentFactory:
         token = github_settings.get('token')
         repository = github_settings.get('repository')
         enterprise_url = github_settings.get('enterprise_url')
+        ca_bundle_path = github_settings.get('ca_bundle_path') or None
+        verify_ssl = github_settings.get('verify_ssl', True)
 
         if not token or not repository:
             logger.warning("GitHub sync disabled: missing credentials")
             return None
 
-        sync_service = GitHubSyncService(token, repository, enterprise_url)
+        sync_service = GitHubSyncService(
+            token=token,
+            repository=repository,
+            enterprise_url=enterprise_url,
+            ca_bundle_path=ca_bundle_path,
+            verify_ssl=verify_ssl,
+        )
         logger.info(f"GitHub sync initialized for repository: {repository}")
         return sync_service
 

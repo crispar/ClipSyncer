@@ -23,6 +23,9 @@ github:
   pull_interval: 60  # seconds - how often to check for new entries from other devices
   push_debounce: 5  # seconds - wait after clipboard change before pushing
   min_push_interval: 30  # seconds - minimum time between pushes
+  # Corporate TLS / SSL settings (for MITM proxies with custom root CA)
+  ca_bundle_path: ""  # path to a PEM file (e.g. C:/corp/ca-bundle.crt); empty = use system/certifi
+  verify_ssl: true    # set false ONLY as a last resort in closed corporate networks
 
 cleanup:
   enabled: true

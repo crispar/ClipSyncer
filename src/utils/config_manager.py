@@ -68,7 +68,9 @@ class ConfigManager:
                 'repository': '',
                 'token': '',
                 'sync_interval': 3600,
-                'auto_sync': False
+                'auto_sync': False,
+                'ca_bundle_path': '',
+                'verify_ssl': True,
             },
             'cleanup': {
                 'enabled': True,

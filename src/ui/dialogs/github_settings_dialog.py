@@ -3,7 +3,7 @@
 from typing import Optional, Callable, Tuple
 from urllib.parse import urlparse
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QDialog
+from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QWidget, QDialog, QFileDialog
 from qfluentwidgets import (
     LineEdit, PasswordLineEdit, PushButton, PrimaryPushButton,
     BodyLabel, CaptionLabel, InfoBar, InfoBarPosition,
@@ -40,7 +40,7 @@ class GitHubSettingsDialog(QDialog):
 
         # Set window properties
         self.setFixedWidth(500)
-        self.setFixedHeight(550)
+        self.setFixedHeight(660)
 
     def _apply_theme_style(self):
         """Apply appropriate styling based on system theme"""
@@ -190,6 +190,30 @@ class GitHubSettingsDialog(QDialog):
         self.auto_sync_input.setText(str(auto_sync_value))
         main_layout.addWidget(self.auto_sync_input)
 
+        # Corporate TLS CA bundle (for MITM proxies on corporate networks)
+        ca_label = BodyLabel("Corporate CA bundle (optional):")
+        main_layout.addWidget(ca_label)
+
+        ca_row = QHBoxLayout()
+        self.ca_bundle_input = LineEdit()
+        self.ca_bundle_input.setPlaceholderText("e.g., C:/corp/ca-bundle.crt")
+        self.ca_bundle_input.setText(self.current_settings.get('ca_bundle_path', '') or '')
+        ca_row.addWidget(self.ca_bundle_input)
+
+        self.ca_browse_button = PushButton("Browse...", self, FIF.FOLDER)
+        self.ca_browse_button.clicked.connect(self._browse_ca_bundle)
+        ca_row.addWidget(self.ca_browse_button)
+
+        main_layout.addLayout(ca_row)
+
+        ca_hint = CaptionLabel(
+            "Set this if you see \"Could not find a suitable TLS CA certificate bundle\" "
+            "on a corporate network that intercepts HTTPS. Point it to your corporate root CA "
+            "(.crt/.pem)."
+        )
+        ca_hint.setWordWrap(True)
+        main_layout.addWidget(ca_hint)
+
         # Help link
         help_label = CaptionLabel(
             '<a href="https://github.com/settings/tokens">Create GitHub Token</a> | '
@@ -262,6 +286,18 @@ class GitHubSettingsDialog(QDialog):
             # For GitHub Enterprise
             return path, base_url, base_url
 
+    def _browse_ca_bundle(self):
+        """Open a file picker to choose a corporate CA bundle (PEM/CRT)."""
+        start_dir = self.ca_bundle_input.text().strip() or ""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select CA bundle",
+            start_dir,
+            "Certificate files (*.crt *.pem *.cer);;All files (*.*)",
+        )
+        if path:
+            self.ca_bundle_input.setText(path)
+
     def _test_connection(self):
         """Test GitHub connection with provided settings"""
         repo_url = self.repo_input.text().strip()
@@ -304,8 +340,17 @@ class GitHubSettingsDialog(QDialog):
             # Import GitHub sync service
             from src.services.sync.github_sync import GitHubSyncService
 
+            ca_bundle = self.ca_bundle_input.text().strip() or None
+            verify_ssl = self.current_settings.get('verify_ssl', True)
+
             # Test connection with parsed enterprise URL
-            sync_service = GitHubSyncService(token, repository, enterprise_url)
+            sync_service = GitHubSyncService(
+                token=token,
+                repository=repository,
+                enterprise_url=enterprise_url,
+                ca_bundle_path=ca_bundle,
+                verify_ssl=verify_ssl,
+            )
 
             if sync_service.test_connection():
                 state_tooltip.setContent("Connection successful!")
@@ -420,6 +465,8 @@ class GitHubSettingsDialog(QDialog):
                 )
                 return
 
+        ca_bundle = self.ca_bundle_input.text().strip()
+
         # Save settings WITHOUT token (token is in keyring)
         settings = {
             'github': {
@@ -428,7 +475,9 @@ class GitHubSettingsDialog(QDialog):
                 'auto_sync_interval_minutes': auto_sync,
                 'auto_sync_enabled': auto_sync > 0,
                 'enabled': True,
-                'is_primary_storage': True  # New flag to indicate GitHub is primary
+                'is_primary_storage': True,  # New flag to indicate GitHub is primary
+                'ca_bundle_path': ca_bundle,
+                'verify_ssl': self.current_settings.get('verify_ssl', True),
             }
         }
 
