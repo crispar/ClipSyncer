@@ -53,6 +53,13 @@ class ModernHistoryViewer(QMainWindow):
         self._on_github_settings_changed = on_github_settings_changed
         self.current_entries = []
         self.last_entry_count = 0
+        # Newest timestamp currently displayed; powers incremental refresh so
+        # `_check_for_updates` only decrypts rows added after this point.
+        self._last_seen_timestamp = None
+        # In-memory mirror of favorite content_hashes; refreshed from the
+        # repository on full reload / toggle so the list filter and preview
+        # panel don't round-trip to the DB on every repaint.
+        self._favorite_hashes: set = set()
 
         # Filter helper keeps search/category logic Qt-free and reusable from tests.
         self._filter = HistoryFilter(favorite_resolver=self._is_favorite_for_filter)
@@ -66,6 +73,13 @@ class ModernHistoryViewer(QMainWindow):
 
         self._init_ui()
         self._load_entries()
+
+        # Debounce timer for the search box so we don't re-walk the list
+        # on every keystroke while the user is still typing.
+        self._search_debounce_timer = QTimer(self)
+        self._search_debounce_timer.setSingleShot(True)
+        self._search_debounce_timer.setInterval(150)
+        self._search_debounce_timer.timeout.connect(self._apply_combined_filter)
 
         # Setup auto-refresh timer (check every 1 second)
         self.refresh_timer = QTimer()
@@ -291,7 +305,12 @@ class ModernHistoryViewer(QMainWindow):
         self.history_list.customContextMenuRequested.connect(self._show_context_menu)
 
     def _load_entries(self):
-        """Load clipboard entries"""
+        """Full reload: clears the list and re-adds every entry.
+
+        Fast paths (new clipboard additions) are handled by
+        ``_check_for_updates`` so this method now runs on initial load,
+        manual refresh (F5), imports, restores and external count drops.
+        """
         try:
             self.history_list.clear()
 
@@ -304,9 +323,18 @@ class ModernHistoryViewer(QMainWindow):
             else:
                 self.current_entries = []
 
+            # Refresh cached favorite hashes in a single query; cheap on SQLite
+            # and avoids per-row `is_favorite()` round trips during filtering
+            # and preview rendering.
+            self._refresh_favorite_cache()
+
             # Add to list widget
             for entry in self.current_entries:
                 self._add_entry_to_list(entry)
+
+            # Record the newest timestamp so incremental refresh can query
+            # only the rows added after this point.
+            self._last_seen_timestamp = self._compute_newest_timestamp(self.current_entries)
 
             # Re-apply active filter so state survives a reload
             self._apply_combined_filter()
@@ -351,10 +379,20 @@ class ModernHistoryViewer(QMainWindow):
         """Public refresh API used by coordinators/main app."""
         self._load_entries()
 
+    # Threshold above which an incremental prepend is abandoned in favour of
+    # a full reload (e.g. a GitHub pull brought in a large batch).
+    _INCREMENTAL_REFRESH_MAX_DELTA = 50
+
     def _check_for_updates(self):
-        """Check for new clipboard entries and refresh if needed"""
+        """Detect new entries and refresh the list.
+
+        Fast path: if the count grew by a small delta, only fetch and prepend
+        the rows newer than ``_last_seen_timestamp``. Selection is preserved
+        because existing QListWidgetItems are never touched. Fall back to a
+        full reload when the delta is large or the count shrinks (external
+        delete / cleanup / clear).
+        """
         try:
-            # Get current entry count from the actual source
             if self.repository:
                 current_count = self.repository.get_entry_count()
             elif self.clipboard_history:
@@ -362,49 +400,112 @@ class ModernHistoryViewer(QMainWindow):
             else:
                 return
 
-            # If count changed, refresh the list
-            if current_count != self.last_entry_count:
-                # Save previous count before reload (for new entry detection)
-                previous_count = self.last_entry_count
+            if current_count == self.last_entry_count:
+                return
 
-                # Remember current selection
-                current_row = self.history_list.currentRow()
-                current_item_content = None
+            previous_count = self.last_entry_count
 
-                if current_row >= 0 and current_row < len(self.current_entries):
-                    current_item_content = self.current_entries[current_row].content
+            if current_count < previous_count:
+                # External deletion or cleanup; rebuild to stay correct.
+                self._reload_preserving_selection()
+                return
 
-                # Reload entries - this will update self.last_entry_count
-                self._load_entries()
+            delta = current_count - previous_count
 
-                # Try to restore selection based on content
-                if current_item_content:
-                    for i, entry in enumerate(self.current_entries):
-                        if entry.content == current_item_content:
-                            self.history_list.setCurrentRow(i)
-                            break
-                    else:
-                        # If not found, select the first item
-                        if self.history_list.count() > 0:
-                            self.history_list.setCurrentRow(0)
-                elif self.history_list.count() > 0:
-                    # Select the first (newest) item
-                    self.history_list.setCurrentRow(0)
+            if (
+                self.repository
+                and self._last_seen_timestamp is not None
+                and delta <= self._INCREMENTAL_REFRESH_MAX_DELTA
+                and hasattr(self.repository, "get_entries_since")
+            ):
+                new_entries = self.repository.get_entries_since(
+                    self._last_seen_timestamp, limit=self._INCREMENTAL_REFRESH_MAX_DELTA
+                )
+                if new_entries:
+                    self._prepend_new_entries(new_entries)
+                    self.last_entry_count = current_count
+                    self._notify_new_entries()
+                    return
+                # Fallthrough: count grew but no newer rows (e.g. timestamp
+                # ties). Full reload keeps state consistent.
 
-                # Show notification only for new entries (not deletions)
-                if current_count > previous_count:
-                    InfoBar.success(
-                        title="New Entry",
-                        content="Clipboard history updated",
-                        orient=Qt.Orientation.Horizontal,
-                        isClosable=True,
-                        position=InfoBarPosition.BOTTOM_RIGHT,
-                        duration=1500,
-                        parent=self
-                    )
+            self._reload_preserving_selection()
+            if current_count > previous_count:
+                self._notify_new_entries()
 
         except Exception as e:
             logger.error(f"Error checking for updates: {e}")
+
+    def _reload_preserving_selection(self) -> None:
+        """Remember the selected entry, do a full reload, restore selection."""
+        current_row = self.history_list.currentRow()
+        current_item_content = None
+        if 0 <= current_row < len(self.current_entries):
+            current_item_content = self.current_entries[current_row].content
+
+        self._load_entries()
+
+        if current_item_content:
+            for i, entry in enumerate(self.current_entries):
+                if entry.content == current_item_content:
+                    self.history_list.setCurrentRow(i)
+                    return
+        if self.history_list.count() > 0:
+            self.history_list.setCurrentRow(0)
+
+    def _prepend_new_entries(self, new_entries) -> None:
+        """Insert freshly-arrived entries at the top without touching the
+        existing items — preserves scroll position and selection.
+        """
+        # Guard against duplicates (e.g. overlapping timestamps).
+        known_hashes = {e.content_hash for e in self.current_entries}
+        added_any = False
+        # Insert in chronological order so the newest ends up at index 0.
+        for entry in reversed(new_entries):
+            if entry.content_hash in known_hashes:
+                continue
+            self.current_entries.insert(0, entry)
+            item = QListWidgetItem(HistoryItemFormatter.list_item_text(entry))
+            item.setData(Qt.ItemDataRole.UserRole, entry)
+            item.setSizeHint(QSize(0, LIST_ITEM_HEIGHT))
+            self.history_list.insertItem(0, item)
+            known_hashes.add(entry.content_hash)
+            added_any = True
+
+        if not added_any:
+            return
+
+        self._last_seen_timestamp = self._compute_newest_timestamp(self.current_entries)
+        # Enforce the same 500-cap the initial load uses.
+        while len(self.current_entries) > 500:
+            self.current_entries.pop()
+            overflow_row = self.history_list.count() - 1
+            if overflow_row >= 0:
+                self.history_list.takeItem(overflow_row)
+
+        self._apply_combined_filter()
+
+    def _notify_new_entries(self) -> None:
+        InfoBar.success(
+            title="New Entry",
+            content="Clipboard history updated",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=True,
+            position=InfoBarPosition.BOTTOM_RIGHT,
+            duration=1500,
+            parent=self,
+        )
+
+    @staticmethod
+    def _compute_newest_timestamp(entries):
+        newest = None
+        for entry in entries:
+            ts = getattr(entry, "timestamp", None)
+            if ts is None:
+                continue
+            if newest is None or ts > newest:
+                newest = ts
+        return newest
 
     def _add_entry_to_list(self, entry):
         """Add entry to list widget with modern styling"""
@@ -426,20 +527,26 @@ class ModernHistoryViewer(QMainWindow):
             # Update preview
             self.preview_text.setPlainText(entry.content)
 
-            # Update favorite button state via repository API
-            if self.repository:
-                self.favorite_button.setChecked(
-                    self.repository.is_favorite(entry.content_hash)
-                )
-            else:
-                self.favorite_button.setChecked(False)
+            # Favorite state comes from the in-memory cache built once per
+            # reload, avoiding a DB hit on every list-selection change.
+            self.favorite_button.setChecked(
+                entry.content_hash in self._favorite_hashes
+            )
 
             # Update metadata with modern formatting
             self.metadata_label.setText(HistoryItemFormatter.metadata_text(entry))
 
     def _on_search(self, text):
-        """Handle search input - applies combined search + filter"""
-        self._apply_combined_filter()
+        """Handle search input.
+
+        Filtering is debounced (~150ms) so rapid typing does not iterate the
+        entire list on every keystroke; category changes stay immediate since
+        they fire far less often.
+        """
+        if hasattr(self, "_search_debounce_timer"):
+            self._search_debounce_timer.start()
+        else:
+            self._apply_combined_filter()
 
     def _on_filter_change(self, category):
         """Handle category filter change - applies combined search + filter"""
@@ -496,13 +603,43 @@ class ModernHistoryViewer(QMainWindow):
             self.list_stack.setCurrentIndex(0)
 
     def _is_favorite_for_filter(self, content_hash: str) -> bool:
-        """Favorite resolver used by HistoryFilter; safe when no repo is wired."""
-        if not self.repository or not content_hash:
+        """Favorite resolver used by HistoryFilter; backed by the in-memory
+        cache so filter passes stay O(1) per entry.
+        """
+        if not content_hash:
             return False
+        return content_hash in self._favorite_hashes
+
+    def _refresh_favorite_cache(self) -> None:
+        """Reload favorite hashes from the repository, if it supports it.
+
+        Falls back to a per-entry ``is_favorite`` scan for older backends so
+        this layer stays duck-typed against ``StorageBackend``.
+        """
+        if not self.repository:
+            self._favorite_hashes = set()
+            return
+
         try:
-            return bool(self.repository.is_favorite(content_hash))
-        except Exception:
-            return False
+            if hasattr(self.repository, "get_favorite_hashes"):
+                self._favorite_hashes = set(self.repository.get_favorite_hashes())
+                return
+        except Exception as e:
+            logger.warning(f"get_favorite_hashes() failed, falling back: {e}")
+
+        fallback = set()
+        try:
+            is_fav = getattr(self.repository, "is_favorite", None)
+            if callable(is_fav):
+                for entry in self.current_entries:
+                    try:
+                        if is_fav(entry.content_hash):
+                            fallback.add(entry.content_hash)
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.warning(f"favorite fallback failed: {e}")
+        self._favorite_hashes = fallback
 
     def update_sync_status(self) -> None:
         """Refresh the GitHub sync status indicator in the header."""
@@ -548,8 +685,20 @@ class ModernHistoryViewer(QMainWindow):
             if entry:
                 success = self.repository.toggle_favorite(entry.content_hash)
                 if success:
-                    # Update button state
-                    self.favorite_button.setChecked(not self.favorite_button.isChecked())
+                    # Keep the in-memory favorite cache in sync without a
+                    # follow-up DB query.
+                    if entry.content_hash in self._favorite_hashes:
+                        self._favorite_hashes.discard(entry.content_hash)
+                        is_favorite_now = False
+                    else:
+                        self._favorite_hashes.add(entry.content_hash)
+                        is_favorite_now = True
+                    self.favorite_button.setChecked(is_favorite_now)
+
+                    # If the favorites-only filter is active, visibility may
+                    # change; re-apply the filter so the list stays honest.
+                    if self.category_combo.currentText() == FAVORITES_LABEL:
+                        self._apply_combined_filter()
 
                     # Show notification
                     InfoBar.success(
@@ -594,6 +743,8 @@ class ModernHistoryViewer(QMainWindow):
                     self.metadata_label.clear()
                     self.current_entries = []
                     self.last_entry_count = 0
+                    self._last_seen_timestamp = None
+                    self._favorite_hashes.clear()
                     self._update_count_label(0)
                     self._update_list_stack(0)
 
@@ -1011,6 +1162,7 @@ class ModernHistoryViewer(QMainWindow):
                 self.current_entries = [
                     e for e in self.current_entries if e.content_hash != entry.content_hash
                 ]
+                self._favorite_hashes.discard(entry.content_hash)
                 # Re-apply filter so counts/empty-state stay accurate
                 self._apply_combined_filter()
 

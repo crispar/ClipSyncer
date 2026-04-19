@@ -37,13 +37,16 @@ def _entry(content, category="text", ts=None):
 
 def _repo(entries, favorites=None):
     """Build a MagicMock repository with canned data."""
-    favorites = favorites or set()
+    favorites = set(favorites or set())
     repo = MagicMock()
     repo.get_entries.return_value = list(entries)
     repo.get_entry_count.return_value = len(entries)
+    repo.get_favorite_hashes.return_value = set(favorites)
     repo.is_favorite.side_effect = lambda h: h in favorites
     repo.toggle_favorite.return_value = True
     repo.clear_all.return_value = True
+    # get_entries_since: fallback for tests that exercise incremental refresh.
+    repo.get_entries_since.return_value = []
     return repo
 
 
@@ -236,3 +239,166 @@ class TestRefreshIsIdempotent:
         ]
         assert len(visible) == 1
         assert "hello" in visible[0].text()
+
+
+class TestIncrementalRefresh:
+    """Performance path: only the delta is fetched / inserted."""
+
+    def test_no_change_skips_reload(self, viewer_factory):
+        viewer, repo = viewer_factory([_entry("a"), _entry("b")])
+        repo.get_entries.reset_mock()
+        repo.get_entries_since.reset_mock()
+
+        viewer._check_for_updates()
+
+        assert repo.get_entries.call_count == 0
+        assert repo.get_entries_since.call_count == 0
+
+    def test_new_entries_are_prepended_without_full_reload(self, viewer_factory):
+        old = _entry("old", ts=datetime(2024, 1, 1, 10, 0, 0))
+        viewer, repo = viewer_factory([old])
+
+        new_a = _entry("new_a", ts=datetime(2024, 1, 1, 11, 0, 0))
+        new_b = _entry("new_b", ts=datetime(2024, 1, 1, 12, 0, 0))
+
+        repo.get_entry_count.return_value = 3
+        repo.get_entries_since.return_value = [new_b, new_a]
+        repo.get_entries.reset_mock()
+
+        viewer._check_for_updates()
+
+        # Full reload path MUST NOT have been taken (no get_entries call).
+        assert repo.get_entries.call_count == 0
+        assert repo.get_entries_since.called
+
+        contents = [
+            viewer.history_list.item(i).data(256).content
+            for i in range(viewer.history_list.count())
+        ]
+        assert contents == ["new_b", "new_a", "old"]
+        assert viewer.count_label.text() == "3 items"
+
+    def test_large_delta_falls_back_to_full_reload(self, viewer_factory):
+        viewer, repo = viewer_factory([_entry("a")])
+        repo.get_entry_count.return_value = 500  # huge delta
+        repo.get_entries_since.return_value = []
+        repo.get_entries.reset_mock()
+
+        viewer._check_for_updates()
+
+        assert repo.get_entries.call_count == 1  # full reload
+
+    def test_count_drop_triggers_full_reload(self, viewer_factory):
+        viewer, repo = viewer_factory([_entry("a"), _entry("b")])
+
+        # External deletion: count shrinks.
+        repo.get_entry_count.return_value = 1
+        repo.get_entries.return_value = [_entry("a")]
+        repo.get_entries.reset_mock()
+
+        viewer._check_for_updates()
+
+        assert repo.get_entries.call_count == 1
+        assert viewer.count_label.text() == "1 items"
+
+    def test_prepend_dedupes_on_content_hash(self, viewer_factory):
+        e1 = _entry("dup", ts=datetime(2024, 1, 1, 10, 0, 0))
+        viewer, repo = viewer_factory([e1])
+
+        # Same entry returned from get_entries_since must not be duplicated.
+        repo.get_entry_count.return_value = 2
+        repo.get_entries_since.return_value = [e1]
+
+        viewer._check_for_updates()
+
+        # Incremental path skipped the duplicate, so it falls back to reload.
+        # Either way, the list size stays 1.
+        assert viewer.history_list.count() == 1
+
+
+class TestSearchDebounce:
+    def test_search_defers_filter_apply(self, viewer_factory):
+        viewer, _ = viewer_factory([_entry("apple"), _entry("banana")])
+
+        # Use a long debounce so we can assert the filter has not yet run.
+        viewer._search_debounce_timer.setInterval(5000)
+        viewer.search_input.setText("app")
+
+        # Timer is active but the filter should not have fired yet, so all
+        # items remain visible.
+        assert viewer._search_debounce_timer.isActive()
+        visible_before = sum(
+            1
+            for i in range(viewer.history_list.count())
+            if not viewer.history_list.item(i).isHidden()
+        )
+        assert visible_before == 2
+
+        # Trigger the filter manually as the debounce timer would.
+        viewer._apply_combined_filter()
+        visible_after = [
+            viewer.history_list.item(i)
+            for i in range(viewer.history_list.count())
+            if not viewer.history_list.item(i).isHidden()
+        ]
+        assert len(visible_after) == 1
+        assert "apple" in visible_after[0].text()
+
+    def test_rapid_typing_coalesces_into_single_apply(self, qtbot, viewer_factory):
+        viewer, _ = viewer_factory([_entry("apple")])
+        # Shorten debounce for a fast test.
+        viewer._search_debounce_timer.setInterval(50)
+
+        # Simulate rapid typing.
+        for chunk in ("a", "ap", "app"):
+            viewer.search_input.setText(chunk)
+
+        # Timer should be scheduled — wait for it to fire.
+        qtbot.wait(120)
+        assert not viewer._search_debounce_timer.isActive()
+
+        visible = [
+            viewer.history_list.item(i)
+            for i in range(viewer.history_list.count())
+            if not viewer.history_list.item(i).isHidden()
+        ]
+        assert len(visible) == 1
+
+
+class TestFavoriteHashCache:
+    def test_cache_populated_from_repository(self, viewer_factory):
+        e1 = _entry("one")
+        e2 = _entry("two")
+        viewer, repo = viewer_factory([e1, e2], favorites={e1.content_hash})
+
+        assert viewer._favorite_hashes == {e1.content_hash}
+        # Exactly one bulk query is made at load time.
+        assert repo.get_favorite_hashes.call_count >= 1
+
+    def test_selection_change_does_not_query_repository(self, viewer_factory):
+        e1 = _entry("one")
+        viewer, repo = viewer_factory([e1], favorites={e1.content_hash})
+
+        repo.is_favorite.reset_mock()
+
+        viewer.history_list.setCurrentRow(0)
+
+        # Preview update must read from the cache, not the DB.
+        assert repo.is_favorite.call_count == 0
+        assert viewer.favorite_button.isChecked() is True
+
+    def test_toggle_updates_cache_in_place(self, viewer_factory):
+        e1 = _entry("one")
+        viewer, repo = viewer_factory([e1], favorites=set())
+
+        viewer.history_list.setCurrentRow(0)
+        repo.get_favorite_hashes.reset_mock()
+
+        viewer._toggle_favorite()
+        assert e1.content_hash in viewer._favorite_hashes
+
+        viewer._toggle_favorite()
+        assert e1.content_hash not in viewer._favorite_hashes
+
+        # No extra bulk query was issued — toggle updates the cache directly.
+        assert repo.get_favorite_hashes.call_count == 0

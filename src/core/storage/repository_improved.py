@@ -367,6 +367,73 @@ class ClipboardRepository(StorageBackend):
             logger.error(f"Failed to get entry count: {e}")
             return 0
 
+    def get_entries_since(
+        self, since_timestamp: datetime, limit: int = 500
+    ) -> List[ClipboardEntry]:
+        """
+        Return entries whose timestamp is strictly greater than ``since_timestamp``.
+
+        Used for incremental refresh in the UI so only new rows are decrypted
+        instead of rebuilding the whole history list. Newest first.
+        """
+        if since_timestamp is None:
+            return self.get_entries(limit=limit)
+
+        try:
+            with self.get_session() as session:
+                db_entries = (
+                    session.query(ClipboardEntryDB)
+                    .filter(ClipboardEntryDB.timestamp > since_timestamp)
+                    .order_by(ClipboardEntryDB.timestamp.desc())
+                    .limit(limit)
+                    .all()
+                )
+
+                entries = []
+                for db_entry in db_entries:
+                    try:
+                        encrypted_data = {
+                            'ciphertext': db_entry.encrypted_content,
+                            'nonce': db_entry.encrypted_nonce,
+                            'tag': db_entry.encrypted_tag,
+                        }
+                        content = self.encryption.decrypt(encrypted_data)
+                        entries.append(ClipboardEntry(
+                            content=content,
+                            timestamp=db_entry.timestamp,
+                            content_hash=db_entry.content_hash,
+                            category=db_entry.category,
+                            metadata=(
+                                json.loads(db_entry.entry_metadata)
+                                if db_entry.entry_metadata else {}
+                            ),
+                        ))
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt entry {db_entry.id}: {e}")
+                return entries
+        except Exception as e:
+            logger.error(f"Failed to get entries since {since_timestamp}: {e}")
+            return []
+
+    def get_favorite_hashes(self) -> set:
+        """
+        Return the set of content_hashes that are marked as favorites.
+
+        Loaded in a single query so the UI can cache membership instead of
+        hitting the DB on every selection change or filter pass.
+        """
+        try:
+            with self.get_session() as session:
+                rows = (
+                    session.query(ClipboardEntryDB.content_hash)
+                    .filter(ClipboardEntryDB.is_favorite == True)  # noqa: E712
+                    .all()
+                )
+                return {r[0] for r in rows}
+        except Exception as e:
+            logger.error(f"Failed to load favorite hashes: {e}")
+            return set()
+
     def clear_all(self) -> bool:
         """
         Clear all clipboard entries from database

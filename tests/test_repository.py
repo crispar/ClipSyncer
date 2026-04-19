@@ -145,3 +145,51 @@ class TestClipboardRepository:
 
         entries = repository.get_entries()
         assert entries[0].metadata == {"source": "browser", "app": "chrome"}
+
+    def test_get_entries_since_returns_only_newer(self, repository):
+        old = self._make_entry("old", timestamp=datetime(2024, 1, 1, 12, 0, 0))
+        middle = self._make_entry("middle", timestamp=datetime(2024, 6, 1, 12, 0, 0))
+        new = self._make_entry("new", timestamp=datetime(2024, 12, 1, 12, 0, 0))
+        for e in (old, middle, new):
+            repository.save_entry(e)
+
+        result = repository.get_entries_since(datetime(2024, 6, 1, 12, 0, 0))
+
+        contents = [e.content for e in result]
+        assert contents == ["new"]  # strictly greater, newest first
+
+    def test_get_entries_since_is_newest_first(self, repository):
+        entries = [
+            self._make_entry(f"e{i}", timestamp=datetime(2024, 1, 1, 12, i, 0))
+            for i in range(5)
+        ]
+        for e in entries:
+            repository.save_entry(e)
+
+        result = repository.get_entries_since(datetime(2024, 1, 1, 12, 1, 0))
+
+        contents = [e.content for e in result]
+        assert contents == ["e4", "e3", "e2"]
+
+    def test_get_entries_since_none_timestamp_returns_all(self, repository):
+        for i in range(3):
+            repository.save_entry(self._make_entry(f"e{i}"))
+        result = repository.get_entries_since(None)
+        assert len(result) == 3
+
+    def test_get_favorite_hashes_returns_set_of_hashes(self, repository):
+        e1 = self._make_entry("a")
+        e2 = self._make_entry("b")
+        e3 = self._make_entry("c")
+        for e in (e1, e2, e3):
+            repository.save_entry(e)
+
+        repository.toggle_favorite(e1.content_hash)
+        repository.toggle_favorite(e3.content_hash)
+
+        hashes = repository.get_favorite_hashes()
+        assert hashes == {e1.content_hash, e3.content_hash}
+
+    def test_get_favorite_hashes_empty_when_none_marked(self, repository):
+        repository.save_entry(self._make_entry("a"))
+        assert repository.get_favorite_hashes() == set()
