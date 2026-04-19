@@ -6,7 +6,7 @@ from typing import Optional, List
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
-    QWidget, QListWidgetItem, QLabel, QSplitter
+    QWidget, QListWidgetItem, QLabel, QSplitter, QStackedWidget
 )
 from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QIcon, QFont, QShortcut, QKeySequence
@@ -22,6 +22,9 @@ from qfluentwidgets import (
     FluentStyleSheet, RoundMenu, Action
 )
 from loguru import logger
+
+from .filters import HistoryFilter, CATEGORY_LABELS, FAVORITES_LABEL
+from .formatters import HistoryItemFormatter, LIST_ITEM_HEIGHT
 
 
 class ModernHistoryViewer(QMainWindow):
@@ -50,6 +53,9 @@ class ModernHistoryViewer(QMainWindow):
         self._on_github_settings_changed = on_github_settings_changed
         self.current_entries = []
         self.last_entry_count = 0
+
+        # Filter helper keeps search/category logic Qt-free and reusable from tests.
+        self._filter = HistoryFilter(favorite_resolver=self._is_favorite_for_filter)
 
         # Set window properties
         self.setWindowTitle("Clipboard History")
@@ -107,6 +113,13 @@ class ModernHistoryViewer(QMainWindow):
         # Title
         title = TitleLabel("Clipboard History")
         header_layout.addWidget(title)
+
+        # Sync status indicator (updates via update_sync_status())
+        self.sync_status_label = CaptionLabel("")
+        self.sync_status_label.setToolTip("GitHub sync status")
+        header_layout.addSpacing(12)
+        header_layout.addWidget(self.sync_status_label)
+
         header_layout.addStretch()
 
         # Action buttons
@@ -149,9 +162,9 @@ class ModernHistoryViewer(QMainWindow):
         self.search_input.textChanged.connect(self._on_search)
         self.search_input.setFixedHeight(36)
 
-        # Category filter
+        # Category filter (labels kept in sync with HistoryFilter's mapping)
         self.category_combo = ComboBox()
-        self.category_combo.addItems(["All", "Text", "URL", "File Path", "Email"])
+        self.category_combo.addItems(CATEGORY_LABELS)
         self.category_combo.currentTextChanged.connect(self._on_filter_change)
         self.category_combo.setFixedWidth(150)
 
@@ -187,11 +200,32 @@ class ModernHistoryViewer(QMainWindow):
 
         list_layout.addWidget(list_header)
 
-        # History list with Fluent style
+        # History list with Fluent style, wrapped in a stack so we can show
+        # a friendly empty-state when there is nothing to display.
         self.history_list = ListWidget()
         self.history_list.currentItemChanged.connect(self._on_selection_changed)
         self.history_list.itemDoubleClicked.connect(self._copy_to_clipboard)
-        list_layout.addWidget(self.history_list)
+
+        self._empty_state = QWidget()
+        empty_layout = QVBoxLayout(self._empty_state)
+        empty_layout.setContentsMargins(24, 24, 24, 24)
+        empty_layout.addStretch()
+        self._empty_title = SubtitleLabel("No clipboard entries yet")
+        self._empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_hint = BodyLabel(
+            "Copy something to start building your history, or adjust the filter above."
+        )
+        self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_hint.setWordWrap(True)
+        empty_layout.addWidget(self._empty_title)
+        empty_layout.addSpacing(8)
+        empty_layout.addWidget(self._empty_hint)
+        empty_layout.addStretch()
+
+        self.list_stack = QStackedWidget()
+        self.list_stack.addWidget(self.history_list)   # index 0
+        self.list_stack.addWidget(self._empty_state)   # index 1
+        list_layout.addWidget(self.list_stack)
 
         splitter.addWidget(list_card)
 
@@ -274,14 +308,17 @@ class ModernHistoryViewer(QMainWindow):
             for entry in self.current_entries:
                 self._add_entry_to_list(entry)
 
-            # Update count
-            self.count_label.setText(f"{len(self.current_entries)} items")
+            # Re-apply active filter so state survives a reload
+            self._apply_combined_filter()
 
             # Update last entry count (use actual DB count to match _check_for_updates)
             if self.repository:
                 self.last_entry_count = self.repository.get_entry_count()
             else:
                 self.last_entry_count = len(self.current_entries)
+
+            # Refresh sync status (label is a no-op if sync not configured)
+            self.update_sync_status()
 
             # Show success notification only for manual refresh or initial load
             if not hasattr(self, '_initial_load_done'):
@@ -371,40 +408,9 @@ class ModernHistoryViewer(QMainWindow):
 
     def _add_entry_to_list(self, entry):
         """Add entry to list widget with modern styling"""
-        # Create display text
-        preview = entry.content[:80].replace('\n', ' ')
-        if len(entry.content) > 80:
-            preview += "..."
-
-        # Format timestamp
-        time_str = entry.timestamp.strftime("%H:%M · %b %d")
-
-        # Category icon mapping (using text icons for simplicity)
-        category_icons = {
-            "text": "📝",
-            "url": "🌐",
-            "file_path": "📁",
-            "email": "✉️"
-        }
-        icon = category_icons.get(entry.category, "📋")
-
-        # Category names
-        category_names = {
-            "text": "Text",
-            "url": "Link",
-            "file_path": "File",
-            "email": "Email"
-        }
-        category_name = category_names.get(entry.category, "Other")
-
-        # Create list item with rich formatting
-        item_text = f"{icon} {time_str}\n{preview}\n{category_name} · {len(entry.content)} chars"
-        item = QListWidgetItem(item_text)
+        item = QListWidgetItem(HistoryItemFormatter.list_item_text(entry))
         item.setData(Qt.ItemDataRole.UserRole, entry)
-
-        # Set item height
-        item.setSizeHint(QSize(0, 75))
-
+        item.setSizeHint(QSize(0, LIST_ITEM_HEIGHT))
         self.history_list.addItem(item)
 
     def _on_selection_changed(self, current, previous):
@@ -429,13 +435,7 @@ class ModernHistoryViewer(QMainWindow):
                 self.favorite_button.setChecked(False)
 
             # Update metadata with modern formatting
-            metadata_lines = [
-                f"Type: {entry.category.replace('_', ' ').title()}",
-                f"Time: {entry.timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
-                f"Size: {len(entry.content)} characters",
-                f"ID: {entry.content_hash[:16]}..."
-            ]
-            self.metadata_label.setText(" · ".join(metadata_lines))
+            self.metadata_label.setText(HistoryItemFormatter.metadata_text(entry))
 
     def _on_search(self, text):
         """Handle search input - applies combined search + filter"""
@@ -447,41 +447,77 @@ class ModernHistoryViewer(QMainWindow):
 
     def _apply_combined_filter(self):
         """Apply both search text and category filter together"""
-        search_text = self.search_input.text().lower()
-        category = self.category_combo.currentText()
+        search_text = self.search_input.text()
+        category_label = self.category_combo.currentText()
+
+        visible_entries = set(
+            id(e) for e in self._filter.apply(
+                self.current_entries,
+                search_text=search_text,
+                category_label=category_label,
+            )
+        )
+
         visible_count = 0
-
-        category_map = {
-            "Text": "text",
-            "URL": "url",
-            "File Path": "file_path",
-            "Email": "email"
-        }
-
         for i in range(self.history_list.count()):
             item = self.history_list.item(i)
             entry = item.data(Qt.ItemDataRole.UserRole)
+            if entry is not None and id(entry) in visible_entries:
+                item.setHidden(False)
+                visible_count += 1
+            else:
+                item.setHidden(True)
 
-            if entry:
-                # Check search text match
-                matches_search = not search_text or search_text in entry.content.lower()
+        self._update_count_label(visible_count)
+        self._update_list_stack(visible_count)
 
-                # Check category match
-                if category == "All":
-                    matches_category = True
-                else:
-                    internal_category = category_map.get(category, "text")
-                    matches_category = entry.category == internal_category
+    def _update_count_label(self, visible_count: int) -> None:
+        total = len(self.current_entries)
+        if visible_count == total:
+            self.count_label.setText(f"{total} items")
+        else:
+            self.count_label.setText(f"{visible_count} of {total} items")
 
-                # Both conditions must be true
-                if matches_search and matches_category:
-                    item.setHidden(False)
-                    visible_count += 1
-                else:
-                    item.setHidden(True)
+    def _update_list_stack(self, visible_count: int) -> None:
+        """Toggle between the list and the empty-state placeholder."""
+        if visible_count == 0:
+            if len(self.current_entries) == 0:
+                self._empty_title.setText("No clipboard entries yet")
+                self._empty_hint.setText(
+                    "Copy something to start building your history."
+                )
+            else:
+                self._empty_title.setText("No matches")
+                self._empty_hint.setText(
+                    "Try a different search term or category filter."
+                )
+            self.list_stack.setCurrentIndex(1)
+        else:
+            self.list_stack.setCurrentIndex(0)
 
-        # Update count label
-        self.count_label.setText(f"{visible_count} of {len(self.current_entries)} items")
+    def _is_favorite_for_filter(self, content_hash: str) -> bool:
+        """Favorite resolver used by HistoryFilter; safe when no repo is wired."""
+        if not self.repository or not content_hash:
+            return False
+        try:
+            return bool(self.repository.is_favorite(content_hash))
+        except Exception:
+            return False
+
+    def update_sync_status(self) -> None:
+        """Refresh the GitHub sync status indicator in the header."""
+        if not hasattr(self, "sync_status_label"):
+            return
+        if self.github_sync is not None and getattr(self.github_sync, "enabled", False):
+            self.sync_status_label.setText("\u25CF GitHub sync")
+            self.sync_status_label.setToolTip("GitHub sync is enabled")
+            self.sync_status_label.setStyleSheet("color: #2ea043;")
+        else:
+            self.sync_status_label.setText("\u25CB Local only")
+            self.sync_status_label.setToolTip(
+                "GitHub sync is not configured. Open Settings to enable it."
+            )
+            self.sync_status_label.setStyleSheet("color: #8a8a8a;")
 
     def _copy_to_clipboard(self):
         """Copy selected entry to clipboard"""
@@ -558,7 +594,8 @@ class ModernHistoryViewer(QMainWindow):
                     self.metadata_label.clear()
                     self.current_entries = []
                     self.last_entry_count = 0
-                    self.count_label.setText("0 items")
+                    self._update_count_label(0)
+                    self._update_list_stack(0)
 
                     # Show notification
                     InfoBar.success(
@@ -911,6 +948,10 @@ class ModernHistoryViewer(QMainWindow):
         refresh_shortcut = QShortcut(QKeySequence("F5"), self)
         refresh_shortcut.activated.connect(self._load_entries)
 
+        # Ctrl+D: Toggle favorite on selected entry
+        favorite_shortcut = QShortcut(QKeySequence("Ctrl+D"), self)
+        favorite_shortcut.activated.connect(self._toggle_favorite)
+
     def _show_context_menu(self, position):
         """Show right-click context menu for history list"""
         current_item = self.history_list.currentItem()
@@ -970,7 +1011,8 @@ class ModernHistoryViewer(QMainWindow):
                 self.current_entries = [
                     e for e in self.current_entries if e.content_hash != entry.content_hash
                 ]
-                self.count_label.setText(f"{len(self.current_entries)} items")
+                # Re-apply filter so counts/empty-state stay accurate
+                self._apply_combined_filter()
 
                 # Update last_entry_count to avoid triggering auto-refresh
                 if self.repository:
