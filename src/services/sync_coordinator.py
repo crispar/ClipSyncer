@@ -1,11 +1,23 @@
 """Sync coordinator for managing all GitHub sync operations (SRP extraction)"""
 
 import threading
+from typing import Callable, Optional
 from loguru import logger
 
 from src.core.clipboard.history import ClipboardHistory, ClipboardEntry
+from src.core.exceptions import DecryptionError
 from src.core.interfaces import EncryptionStrategy, SyncBackend
 from src.core.storage.repository_improved import ClipboardRepository
+
+
+# User-facing notification copy for decryption failure. Reused by initial_sync,
+# pull_and_merge, and push_to_remote so the user sees a single consistent message.
+_DECRYPTION_LOCK_TITLE = "Sync paused: wrong sync password"
+_DECRYPTION_LOCK_BODY = (
+    "Couldn't decrypt the GitHub backup with the current sync password. "
+    "Auto-push is disabled to protect remote data. "
+    "Open GitHub Settings and re-enter the same password used on your other PC."
+)
 
 
 class SyncCoordinator:
@@ -20,7 +32,8 @@ class SyncCoordinator:
                  encryption: EncryptionStrategy,
                  clipboard_history: ClipboardHistory,
                  repository: ClipboardRepository,
-                 config_getter=None):
+                 config_getter=None,
+                 notifier: Optional[Callable[[str, str], None]] = None):
         """
         Args:
             sync_backend: The sync backend (e.g., GitHubSyncService)
@@ -28,17 +41,62 @@ class SyncCoordinator:
             clipboard_history: In-memory clipboard history
             repository: Persistent storage repository
             config_getter: Callable that returns config dict (for settings sync)
+            notifier: Optional callable(title, body) used to surface user-visible
+                events (e.g., decryption failure). Must be safe to invoke from a
+                background thread; typically wired to a Qt signal emit.
         """
         self._sync_backend = sync_backend
         self._encryption = encryption
         self._history = clipboard_history
         self._repository = repository
         self._config_getter = config_getter
+        self._notifier = notifier
+
+        # Push lockout: once decryption fails we refuse to upload, otherwise a
+        # device with the wrong key would overwrite the remote backup with
+        # data nobody else can decrypt.
+        self._push_locked = False
+        self._notified_lock = False
+        self._state_lock = threading.Lock()
 
     @property
     def sync_backend(self) -> SyncBackend:
         """Access the sync backend"""
         return self._sync_backend
+
+    @property
+    def is_push_locked(self) -> bool:
+        """Whether push is currently locked due to a decryption failure."""
+        return self._push_locked
+
+    def set_notifier(self, notifier: Optional[Callable[[str, str], None]]):
+        """Wire a notifier after construction (e.g., once signal_bridge exists)."""
+        self._notifier = notifier
+
+    def reset_push_lock(self):
+        """Clear the push-lock flag. Call after the user updates the sync password."""
+        with self._state_lock:
+            was_locked = self._push_locked
+            self._push_locked = False
+            self._notified_lock = False
+        if was_locked:
+            logger.info("Push lock cleared - sync resumed")
+
+    def _engage_push_lock(self, reason: str):
+        """Engage the push lock and notify the user (once per lock cycle)."""
+        with self._state_lock:
+            already_locked = self._push_locked
+            self._push_locked = True
+            should_notify = not self._notified_lock
+            self._notified_lock = True
+
+        if not already_locked:
+            logger.error(f"Push locked: {reason}")
+        if should_notify and self._notifier:
+            try:
+                self._notifier(_DECRYPTION_LOCK_TITLE, _DECRYPTION_LOCK_BODY)
+            except Exception as notify_err:  # pragma: no cover - defensive
+                logger.error(f"Notifier failed: {notify_err}")
 
     def initial_sync(self) -> int:
         """
@@ -58,12 +116,18 @@ class SyncCoordinator:
                 logger.warning("No remote backup found - keeping local data")
                 return 0
 
-            decrypted = self._encryption.decrypt_json(backup_data)
-            if not decrypted:
-                logger.warning("Failed to decrypt backup - keeping local data (may need sync password)")
+            try:
+                decrypted = self._encryption.decrypt_json(backup_data)
+            except DecryptionError as e:
+                self._engage_push_lock(f"initial_sync decryption failed: {e}")
                 return 0
 
-            remote_entries = decrypted.get('entries', [])
+            # Successful decrypt means the current key is correct - lift any
+            # prior lock that was engaged with a stale key.
+            self.reset_push_lock()
+
+            remote_entries = decrypted.get('entries', []) if decrypted else []
+            logger.info(f"Initial sync decrypted backup: {len(remote_entries)} entries")
             if not remote_entries:
                 logger.info("Remote backup is empty - keeping local data")
                 return 0
@@ -103,13 +167,22 @@ class SyncCoordinator:
         if not self._sync_backend.is_enabled:
             return
 
+        if self._push_locked:
+            logger.warning(
+                "Skipping push - decryption lock engaged "
+                "(re-enter sync password in GitHub Settings to resume)"
+            )
+            return
+
         try:
             history_data = self._build_sync_payload()
             encrypted = self._encryption.encrypt_json(history_data)
             success = self._sync_backend.upload_backup(encrypted)
 
             if success:
-                logger.info("Push to remote completed")
+                logger.info(
+                    f"Push to remote completed ({len(history_data.get('entries', []))} entries)"
+                )
             else:
                 logger.error("Push to remote failed")
 
@@ -133,13 +206,19 @@ class SyncCoordinator:
                 logger.debug("No backup found or download failed")
                 return
 
-            decrypted = self._encryption.decrypt_json(backup_data)
-            if not decrypted:
-                logger.warning("Failed to decrypt backup - may need sync password")
+            try:
+                decrypted = self._encryption.decrypt_json(backup_data)
+            except DecryptionError as e:
+                self._engage_push_lock(f"pull_and_merge decryption failed: {e}")
                 return
 
+            # Successful decrypt means the current key is correct - lift any
+            # prior lock that was engaged with a stale key.
+            self.reset_push_lock()
+
             # Build hash maps for merge
-            remote_entries = decrypted.get('entries', [])
+            remote_entries = decrypted.get('entries', []) if decrypted else []
+            logger.info(f"Pull decrypted backup: {len(remote_entries)} entries")
             remote_by_hash = {
                 e.get('content_hash'): e
                 for e in remote_entries if e.get('content_hash')
@@ -194,24 +273,33 @@ class SyncCoordinator:
     def manual_sync(self, signal_bridge=None):
         """Run manual sync in a background thread"""
         def sync_task():
-            if self._sync_backend.is_enabled:
-                try:
-                    history_data = self._build_sync_payload()
-                    encrypted = self._encryption.encrypt_json(history_data)
-                    success = self._sync_backend.upload_backup(encrypted)
-
-                    if success:
-                        logger.info("Successfully synced to remote")
-                        if signal_bridge:
-                            signal_bridge.show_notification_signal.emit(
-                                "GitHub Sync", "Backup uploaded successfully"
-                            )
-                    else:
-                        logger.error("Manual sync failed")
-                except Exception as e:
-                    logger.error(f"Manual sync error: {e}")
-            else:
+            if not self._sync_backend.is_enabled:
                 logger.warning("Sync not configured")
+                return
+
+            if self._push_locked:
+                logger.warning("Manual sync blocked - decryption lock engaged")
+                if signal_bridge:
+                    signal_bridge.show_notification_signal.emit(
+                        _DECRYPTION_LOCK_TITLE, _DECRYPTION_LOCK_BODY
+                    )
+                return
+
+            try:
+                history_data = self._build_sync_payload()
+                encrypted = self._encryption.encrypt_json(history_data)
+                success = self._sync_backend.upload_backup(encrypted)
+
+                if success:
+                    logger.info("Successfully synced to remote")
+                    if signal_bridge:
+                        signal_bridge.show_notification_signal.emit(
+                            "GitHub Sync", "Backup uploaded successfully"
+                        )
+                else:
+                    logger.error("Manual sync failed")
+            except Exception as e:
+                logger.error(f"Manual sync error: {e}")
 
         threading.Thread(target=sync_task, daemon=True).start()
 

@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 
 from src.core.clipboard.history import ClipboardEntry
+from src.core.encryption.manager import EncryptionManager
 from src.services.sync_coordinator import SyncCoordinator
 
 
@@ -118,4 +119,145 @@ class TestSyncCoordinator:
         )
 
         coordinator.pull_and_merge()
+        assert len(backend.uploaded_payloads) == 1
+
+
+class TestSyncCoordinatorPushLock:
+    """Decryption-failure safeguards: notify + refuse to push."""
+
+    def _wrong_key_encrypted_payload(self):
+        """Build a backup encrypted with a key SyncCoordinator does NOT have."""
+        wrong_em = EncryptionManager(b"\x11" * 32)
+        return wrong_em.encrypt_json({"entries": [{"content_hash": "deadbeef"}]})
+
+    def test_pull_decryption_failure_engages_push_lock_and_notifies(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        notifications = []
+        backend = DummySyncBackend(backup_payload=self._wrong_key_encrypted_payload())
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+            notifier=lambda title, body: notifications.append((title, body)),
+        )
+
+        coordinator.pull_and_merge()
+
+        assert coordinator.is_push_locked is True
+        assert len(notifications) == 1
+        assert "sync password" in notifications[0][1].lower()
+
+    def test_locked_push_refuses_to_upload(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        backend = DummySyncBackend(backup_payload=self._wrong_key_encrypted_payload())
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+            notifier=lambda *_: None,
+        )
+
+        # Trigger lock
+        coordinator.pull_and_merge()
+        assert coordinator.is_push_locked is True
+
+        # Add a local entry then attempt push - it must NOT touch the backend
+        repository.save_entry(ClipboardEntry(
+            content="local",
+            timestamp=datetime.now(),
+            content_hash=ClipboardEntry.calculate_hash("local"),
+        ))
+        coordinator.push_to_remote()
+        assert backend.uploaded_payloads == []
+
+    def test_notifier_fires_only_once_per_lock_cycle(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        notifications = []
+        backend = DummySyncBackend(backup_payload=self._wrong_key_encrypted_payload())
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+            notifier=lambda title, body: notifications.append((title, body)),
+        )
+
+        coordinator.pull_and_merge()
+        coordinator.pull_and_merge()
+        coordinator.pull_and_merge()
+
+        assert len(notifications) == 1
+
+    def test_successful_pull_clears_lock(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        # First, fail with wrong-key payload to engage the lock.
+        backend = DummySyncBackend(backup_payload=self._wrong_key_encrypted_payload())
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+            notifier=lambda *_: None,
+        )
+        coordinator.pull_and_merge()
+        assert coordinator.is_push_locked is True
+
+        # Now swap in a valid (correctly-encrypted) backup and pull again.
+        backend._backup_payload = encryption_manager.encrypt_json({"entries": []})
+        coordinator.pull_and_merge()
+        assert coordinator.is_push_locked is False
+
+    def test_initial_sync_decryption_failure_engages_lock(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        notifications = []
+        backend = DummySyncBackend(backup_payload=self._wrong_key_encrypted_payload())
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+            notifier=lambda title, body: notifications.append((title, body)),
+        )
+
+        loaded = coordinator.initial_sync()
+        assert loaded == 0
+        assert coordinator.is_push_locked is True
+        assert len(notifications) == 1
+
+    def test_reset_push_lock_unblocks_uploads(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        backend = DummySyncBackend(backup_payload=self._wrong_key_encrypted_payload())
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+            notifier=lambda *_: None,
+        )
+        coordinator.pull_and_merge()
+        assert coordinator.is_push_locked is True
+
+        coordinator.reset_push_lock()
+        assert coordinator.is_push_locked is False
+
+        repository.save_entry(ClipboardEntry(
+            content="post-reset",
+            timestamp=datetime.now(),
+            content_hash=ClipboardEntry.calculate_hash("post-reset"),
+        ))
+        coordinator.push_to_remote()
         assert len(backend.uploaded_payloads) == 1

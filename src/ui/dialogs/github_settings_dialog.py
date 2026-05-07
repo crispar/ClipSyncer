@@ -178,6 +178,14 @@ class GitHubSettingsDialog(QDialog):
         sync_password_hint.setWordWrap(True)
         main_layout.addWidget(sync_password_hint)
 
+        # Key fingerprint indicator. Lets the user compare two PCs without
+        # revealing the actual password. Updates live as the user types.
+        self.fingerprint_label = CaptionLabel("")
+        self.fingerprint_label.setWordWrap(True)
+        main_layout.addWidget(self.fingerprint_label)
+        self._refresh_fingerprint_label("")
+        self.sync_password_input.textChanged.connect(self._refresh_fingerprint_label)
+
         # Auto-sync option
         self.auto_sync_label = BodyLabel("Auto-sync interval (minutes, 0 to disable):")
         main_layout.addWidget(self.auto_sync_label)
@@ -285,6 +293,39 @@ class GitHubSettingsDialog(QDialog):
         else:
             # For GitHub Enterprise
             return path, base_url, base_url
+
+    def _refresh_fingerprint_label(self, password_text: str):
+        """Show the current/projected key fingerprint so users can verify
+        that two devices will derive the same encryption key.
+
+        - If the user is typing a password, show the fingerprint that *would*
+          result from that password (preview).
+        - Otherwise, show the fingerprint of the currently stored key, if any.
+        """
+        try:
+            password_text = (password_text or "").strip()
+            if password_text:
+                from src.core.encryption import KeyManager
+                preview = KeyManager.fingerprint_for_password(password_text)
+                self.fingerprint_label.setText(
+                    f"Preview key fingerprint: {preview}  "
+                    "(must match the other PC's fingerprint)"
+                )
+                return
+
+            stored_fp = self._key_manager.get_key_fingerprint()
+            if stored_fp:
+                self.fingerprint_label.setText(
+                    f"Current key fingerprint: {stored_fp}  "
+                    "(compare with the other PC to confirm sync compatibility)"
+                )
+            else:
+                self.fingerprint_label.setText(
+                    "No sync key set yet - enter a password above."
+                )
+        except Exception as e:
+            logger.debug(f"Could not compute fingerprint preview: {e}")
+            self.fingerprint_label.setText("")
 
     def _browse_ca_bundle(self):
         """Open a file picker to choose a corporate CA bundle (PEM/CRT)."""

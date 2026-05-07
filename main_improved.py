@@ -312,7 +312,8 @@ class ClipboardHistoryApp:
                     encryption=self.encryption_manager,
                     clipboard_history=self.clipboard_history,
                     repository=self.repository,
-                    config_getter=self.config_manager.get_all
+                    config_getter=self.config_manager.get_all,
+                    notifier=self._emit_sync_notification,
                 )
 
                 auto_sync_minutes = settings.get('auto_sync_interval_minutes', 1)
@@ -366,6 +367,11 @@ class ClipboardHistoryApp:
             # Refresh UI via signal (thread-safe)
             if self.signal_bridge:
                 self.signal_bridge.refresh_history_signal.emit()
+
+    def _emit_sync_notification(self, title: str, body: str):
+        """Thread-safe bridge between SyncCoordinator and tray notifications."""
+        if self.signal_bridge:
+            self.signal_bridge.show_notification_signal.emit(title, body)
 
     def _cleanup_now(self):
         """Run cleanup immediately"""
@@ -446,6 +452,12 @@ class ClipboardHistoryApp:
             self.signal_bridge.quit_signal.connect(self._quit_application)
             self.signal_bridge.show_notification_signal.connect(self._show_notification)
             self.signal_bridge.refresh_history_signal.connect(self._refresh_history_viewer)
+
+            # Now that the bridge exists, route SyncCoordinator notifications
+            # through it (must be a Qt signal emit so the toast happens on the
+            # GUI thread).
+            if self.sync_coordinator:
+                self.sync_coordinator.set_notifier(self._emit_sync_notification)
 
             # Start services
             self.clipboard_monitor.start()
