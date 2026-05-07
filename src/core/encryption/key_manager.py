@@ -230,6 +230,40 @@ class KeyManager:
         except Exception:
             return False
 
+    def get_key_fingerprint(self, length: int = 8) -> Optional[str]:
+        """
+        Return a short, deterministic fingerprint of the current encryption key.
+
+        The fingerprint is the lowercase hex prefix of SHA-256(key). It is safe
+        to display: SHA-256 is one-way, so the user can compare two devices'
+        fingerprints to confirm the same sync password was entered, without ever
+        exposing the password or the key itself.
+
+        Args:
+            length: Number of hex chars to return (default 8 → 32 bits, enough
+                to make accidental collisions astronomically unlikely between
+                two specific devices the user controls).
+
+        Returns:
+            Fingerprint string or None if no key is stored.
+        """
+        key = self.get_key()
+        if not key:
+            return None
+        digest = hashlib.sha256(key).hexdigest()
+        return digest[:max(4, length)]
+
+    @staticmethod
+    def fingerprint_for_password(password: str, length: int = 8) -> str:
+        """
+        Compute the fingerprint that *would* be derived from ``password`` without
+        touching the keyring. Lets the settings dialog show a live preview as
+        the user types, so they can compare against the other PC before saving.
+        """
+        key = KeyManager.derive_key_from_password(password)
+        digest = hashlib.sha256(key).hexdigest()
+        return digest[:max(4, length)]
+
     def clear_sync_password(self) -> bool:
         """
         Clear the stored sync password hash.

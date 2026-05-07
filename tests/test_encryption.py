@@ -161,3 +161,28 @@ class TestKeyManagerDerivation:
     def test_sync_salt_constant(self):
         """SYNC_SALT must not change (would break cross-device sync)"""
         assert SYNC_SALT == b"ClipSyncer_v1_salt_2024"
+
+    def test_fingerprint_for_password_deterministic(self):
+        """Same password must produce same fingerprint on every device."""
+        fp1 = KeyManager.fingerprint_for_password("shared_secret")
+        fp2 = KeyManager.fingerprint_for_password("shared_secret")
+        assert fp1 == fp2
+        assert len(fp1) == 8
+        # Hex only
+        int(fp1, 16)
+
+    def test_fingerprint_for_password_distinguishes(self):
+        """Different passwords must produce different fingerprints (with overwhelming probability)."""
+        fp1 = KeyManager.fingerprint_for_password("password_one")
+        fp2 = KeyManager.fingerprint_for_password("password_two")
+        assert fp1 != fp2
+
+    def test_fingerprint_does_not_expose_password_or_key(self):
+        """Fingerprint must not equal or contain the password / raw key."""
+        password = "supersecret"
+        fp = KeyManager.fingerprint_for_password(password)
+        assert password not in fp
+        key = KeyManager.derive_key_from_password(password)
+        # Hex of key vs fingerprint - fingerprint is sha256(key)[:8],
+        # not key bytes themselves.
+        assert fp != key.hex()[:8]
