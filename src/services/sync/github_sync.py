@@ -150,7 +150,12 @@ class GitHubSyncService(SyncBackend):
                 self._repo = self._get_or_create_repo()
                 if self._repo:
                     self._enabled = True
-                    logger.info(f"Connected to repository: {self.repository_name}")
+                    # Logging both fields lets the user diff the two PCs and
+                    # immediately spot a github.com vs Enterprise mismatch.
+                    logger.info(
+                        f"Connected to repository: {self.repository_name} "
+                        f"(host={self.enterprise_url or 'github.com'})"
+                    )
                     return True
 
             return False
@@ -322,9 +327,18 @@ class GitHubSyncService(SyncBackend):
 
         except GithubException as e:
             if e.status == 404:
-                logger.debug(f"Backup file not found: {filepath}")
+                # Not debug: a missing file is the single most common cause
+                # of "PC2 doesn't see PC1's data" (e.g., the two PCs are
+                # configured against different repositories or Enterprise
+                # URLs). Surfacing it in the default INFO stream saves users
+                # from having to dig through DEBUG logs to figure out why
+                # pull silently does nothing.
+                logger.warning(
+                    f"Backup file not found on remote: {filepath} "
+                    f"(repo={self.repository_name}, enterprise={self.enterprise_url or 'github.com'})"
+                )
             else:
-                logger.error(f"GitHub API error: {e}")
+                logger.error(f"GitHub API error while downloading {filepath}: {e}")
             return None
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in backup file: {e}")

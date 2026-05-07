@@ -203,7 +203,14 @@ class SyncCoordinator:
             logger.debug("Pulling clipboard sync from remote")
             backup_data = self._sync_backend.download_backup()
             if not backup_data:
-                logger.debug("No backup found or download failed")
+                # Bumped to INFO so users can tell pull *ran* but came back
+                # empty (vs. pull never running at all). The most common cause
+                # is the remote file genuinely missing (404) or the two PCs
+                # being pointed at different repositories / Enterprise URLs.
+                logger.info(
+                    "Pull skipped: download_backup returned no data "
+                    "(remote file missing or unreachable - check repository config and logs above)"
+                )
                 return
 
             try:
