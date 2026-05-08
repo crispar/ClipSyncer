@@ -28,33 +28,68 @@ def _resolve_verify(ca_bundle_path: Optional[str], verify_ssl: bool) -> Union[st
     "Could not find a suitable TLS CA certificate bundle, invalid path:".
 
     Resolution order:
-    1. Explicit ``ca_bundle_path`` if the file exists.
-    2. ``REQUESTS_CA_BUNDLE`` / ``SSL_CERT_FILE`` env vars if valid.
-    3. certifi's bundled cacert.pem (robust against broken PyInstaller paths).
-    4. ``True`` (system defaults) if ``verify_ssl`` is enabled, else ``False``.
+    1. Explicit ``ca_bundle_path`` if the file exists (user override; respected
+       even when truststore is active so power users keep control).
+    2. ``True`` if truststore is active - the OS trust store handles everything
+       through the patched ssl module (Windows cert mgr / macOS keychain).
+    3. ``REQUESTS_CA_BUNDLE`` / ``SSL_CERT_FILE`` env vars if valid.
+    4. certifi's bundled cacert.pem (robust against broken PyInstaller paths).
+    5. ``True`` (system defaults) if ``verify_ssl`` is enabled, else ``False``.
     """
     if not verify_ssl:
+        logger.warning("TLS verification disabled by config (verify_ssl=False)")
         return False
 
     if ca_bundle_path:
         expanded = os.path.expandvars(os.path.expanduser(str(ca_bundle_path)))
         if os.path.isfile(expanded):
+            try:
+                from src.utils import tls as _tls
+                if _tls.is_active():
+                    logger.warning(
+                        f"Using explicit CA bundle: {expanded}. "
+                        "truststore is also active but will be IGNORED for GitHub "
+                        "calls because an explicit ca_bundle_path is set. "
+                        "If TLS still fails (CERTIFICATE_VERIFY_FAILED), clear "
+                        "the CA bundle field in GitHub Settings to fall back to "
+                        "the Windows certificate store."
+                    )
+            except Exception:
+                pass
+            logger.info(f"TLS verify: using explicit CA bundle {expanded}")
             return expanded
-        logger.warning(f"Configured CA bundle not found: {expanded}")
+        logger.warning(f"Configured CA bundle not found: {expanded} - falling through")
+
+    try:
+        from src.utils import tls as _tls
+        if _tls.is_active():
+            # truststore patched ssl.SSLContext default - returning True lets
+            # urllib3/requests build a default SSLContext which now uses the
+            # OS trust store automatically.
+            logger.info(
+                "TLS verify: using OS trust store via truststore "
+                "(Windows cert mgr / macOS keychain)"
+            )
+            return True
+    except Exception:
+        pass
 
     for env_var in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE"):
         env_path = os.environ.get(env_var)
         if env_path and os.path.isfile(env_path):
+            logger.info(f"TLS verify: using {env_var}={env_path}")
             return env_path
 
     try:
         import certifi
         bundled = certifi.where()
         if bundled and os.path.isfile(bundled):
+            logger.info(f"TLS verify: using certifi bundle {bundled}")
             return bundled
     except Exception:
         pass
 
+    logger.info("TLS verify: using system defaults (verify=True)")
     return True
 
 
@@ -82,15 +117,12 @@ class GitHubSyncService(SyncBackend):
         self.enterprise_url = enterprise_url
         self.ca_bundle_path = ca_bundle_path
         self.verify_ssl = verify_ssl
+        # _resolve_verify logs the chosen TLS mode (truststore / explicit
+        # bundle / certifi / system) so we don't duplicate that here.
         self._verify = _resolve_verify(ca_bundle_path, verify_ssl)
         self._github = None
         self._repo = None
         self._enabled = False
-
-        if self._verify is False:
-            logger.warning("TLS verification disabled for GitHub sync - proceed at your own risk")
-        elif isinstance(self._verify, str):
-            logger.info(f"Using CA bundle for GitHub sync: {self._verify}")
 
         if token and repository:
             self.connect()

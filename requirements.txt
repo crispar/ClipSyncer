@@ -6,6 +6,7 @@ cryptography==42.0.5       # Encryption for data
 PyGithub==2.3.0           # GitHub integration
 watchdog==4.0.0           # File system monitoring
 certifi>=2024.2.2         # TLS root CA bundle (Mozilla store)
+truststore>=0.10.0        # Use OS trust store (Windows cert store / macOS keychain) for TLS
 
 # GUI dependencies
 PyQt6==6.7.1              # Modern GUI framework

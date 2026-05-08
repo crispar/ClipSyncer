@@ -214,11 +214,34 @@ class GitHubSettingsDialog(QDialog):
 
         main_layout.addLayout(ca_row)
 
-        ca_hint = CaptionLabel(
-            "Set this if you see \"Could not find a suitable TLS CA certificate bundle\" "
-            "on a corporate network that intercepts HTTPS. Point it to your corporate root CA "
-            "(.crt/.pem)."
-        )
+        # Tailor the CA-bundle hint based on whether truststore was injected
+        # at startup. If it was, leaving this field empty already uses the
+        # Windows certificate store (where IT typically installs the corporate
+        # root CA), so most users don't need to touch this at all - and a
+        # stale/wrong path here would *override* that good default.
+        try:
+            from src.utils import tls as _tls
+            truststore_active = _tls.is_active()
+        except Exception:
+            truststore_active = False
+
+        if truststore_active:
+            ca_hint_text = (
+                "Optional. The Windows certificate store is already in use "
+                "(via truststore), which usually covers corporate root CAs "
+                "installed by your IT. Leave this empty unless you know you "
+                "need a specific bundle - a wrong path here will override the "
+                "Windows store and break sync."
+            )
+        else:
+            ca_hint_text = (
+                "Set this if you see \"CERTIFICATE_VERIFY_FAILED\" or "
+                "\"Could not find a suitable TLS CA certificate bundle\" on a "
+                "corporate network that intercepts HTTPS. Point it to your "
+                "corporate root CA (.crt/.pem)."
+            )
+
+        ca_hint = CaptionLabel(ca_hint_text)
         ca_hint.setWordWrap(True)
         main_layout.addWidget(ca_hint)
 
