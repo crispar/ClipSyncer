@@ -106,6 +106,11 @@ class SyncCoordinator:
             Number of entries loaded
         """
         if not self._sync_backend.is_enabled:
+            logger.warning(
+                "Initial sync skipped: sync backend is not enabled "
+                "(connect() likely failed - check earlier logs for "
+                "'GitHub connection failed' or 'Unexpected error during GitHub connection')"
+            )
             return 0
 
         try:
@@ -165,6 +170,10 @@ class SyncCoordinator:
     def push_to_remote(self):
         """Push current local state to remote (immediate, for primary storage mode)"""
         if not self._sync_backend.is_enabled:
+            logger.warning(
+                "Push skipped: sync backend is not enabled "
+                "(connect() likely failed - check earlier logs)"
+            )
             return
 
         if self._push_locked:
@@ -197,6 +206,10 @@ class SyncCoordinator:
             history_viewer: Optional UI viewer to refresh after merge
         """
         if not self._sync_backend.is_enabled:
+            logger.warning(
+                "Pull skipped: sync backend is not enabled "
+                "(connect() likely failed - check earlier logs)"
+            )
             return
 
         try:
