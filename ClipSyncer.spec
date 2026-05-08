@@ -119,6 +119,13 @@ hiddenimports += [
 
     # TLS root CA store (critical for corporate MITM proxies)
     'certifi',
+    # Use Windows cert store / macOS keychain via patched ssl module - lets
+    # corporate root CAs installed by IT be picked up automatically.
+    'truststore',
+    'truststore._api',
+    'truststore._macos',
+    'truststore._openssl',
+    'truststore._windows',
 
     # Our modules
     'src',

@@ -6,14 +6,19 @@ import signal
 import threading
 import hashlib
 from pathlib import Path
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QTimer, pyqtSignal, QObject
-from loguru import logger
 
-# Add src to path
+# Add src to path BEFORE any HTTPS-using imports - so truststore can inject
+# into ssl before urllib3/requests/PyGithub cache their default SSLContext.
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
-from src.services.component_factory import ComponentFactory
+from src.utils import tls as _tls_bootstrap  # noqa: E402
+_tls_bootstrap.activate()
+
+from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtCore import QTimer, pyqtSignal, QObject  # noqa: E402
+from loguru import logger  # noqa: E402
+
+from src.services.component_factory import ComponentFactory  # noqa: E402
 from src.services.sync_coordinator import SyncCoordinator
 from src.services.auto_sync_service import AutoSyncService
 from src.services.archive_manager import ArchiveManager
@@ -113,6 +118,23 @@ class ClipboardHistoryApp:
         logger.info(f"Log directory: {log_dir}")
         logger.info(f"Python version: {sys.version}")
         logger.info(f"Frozen: {getattr(sys, 'frozen', False)}")
+
+        # Surface truststore status. Critical to debug corporate TLS issues:
+        # if active=True, OS trust store is in use (Windows cert mgr / macOS
+        # keychain) which usually fixes CERTIFICATE_VERIFY_FAILED on corporate
+        # MITM proxies. If active=False the user must rely on the certifi
+        # bundle or a manually configured ca_bundle_path.
+        if _tls_bootstrap.is_active():
+            logger.info(
+                "TLS: truststore active - using OS trust store "
+                "(Windows cert mgr / macOS keychain / Linux system store)"
+            )
+        else:
+            logger.warning(
+                f"TLS: truststore NOT active ({_tls_bootstrap.last_error() or 'unknown'}); "
+                "falling back to certifi - corporate MITM proxies may break HTTPS. "
+                "Install truststore (Python 3.10+) for native Windows CA support."
+            )
 
     def initialize(self):
         """Initialize all components using ComponentFactory"""
