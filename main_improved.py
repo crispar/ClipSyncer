@@ -263,6 +263,12 @@ class ClipboardHistoryApp:
             if added and latest_entry:
                 self.repository.save_entry(latest_entry)
 
+                # Mark local-dirty BEFORE scheduling the debounced push so a
+                # pull that runs in the meantime can already see the pending
+                # change and won't skip the push as transient drift.
+                if self.sync_coordinator:
+                    self.sync_coordinator.mark_local_dirty()
+
                 if self.auto_sync:
                     self.auto_sync.trigger_push()
 

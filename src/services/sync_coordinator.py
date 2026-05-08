@@ -59,6 +59,18 @@ class SyncCoordinator:
         self._notified_lock = False
         self._state_lock = threading.Lock()
 
+        # Dirty-tracking: pull_and_merge used to fire push_to_remote whenever
+        # local had ANY hash that wasn't in the remote payload. That triggered
+        # a push every pull cycle even with zero clipboard activity, because
+        # the max_history_size limit and timestamp updates in
+        # repository.save_entry create transient drift between local DB rows
+        # and the entries that fit in the last pushed payload. Now we only
+        # push from pull_and_merge if the user actually added something
+        # locally since the last successful push (mark_local_dirty bumps the
+        # token, push_to_remote clears it on success).
+        self._dirty_token = 0
+        self._last_pushed_token = 0
+
     @property
     def sync_backend(self) -> SyncBackend:
         """Access the sync backend"""
@@ -81,6 +93,22 @@ class SyncCoordinator:
             self._notified_lock = False
         if was_locked:
             logger.info("Push lock cleared - sync resumed")
+
+    def mark_local_dirty(self):
+        """Signal that local state has diverged from remote.
+
+        Should be called whenever the user adds, edits, or removes a clipboard
+        entry. push_to_remote clears the resulting dirty state on success, so
+        the dirty/clean comparison drives whether pull_and_merge bothers to
+        push when it sees local-only hashes.
+        """
+        with self._state_lock:
+            self._dirty_token += 1
+
+    def is_local_dirty(self) -> bool:
+        """Whether local state has changes that haven't been pushed yet."""
+        with self._state_lock:
+            return self._dirty_token != self._last_pushed_token
 
     def _engage_push_lock(self, reason: str):
         """Engage the push lock and notify the user (once per lock cycle)."""
@@ -183,12 +211,19 @@ class SyncCoordinator:
             )
             return
 
+        # Capture the dirty token BEFORE the network call so any clipboard
+        # activity that happens during the push is preserved as still-dirty.
+        with self._state_lock:
+            token_at_push = self._dirty_token
+
         try:
             history_data = self._build_sync_payload()
             encrypted = self._encryption.encrypt_json(history_data)
             success = self._sync_backend.upload_backup(encrypted)
 
             if success:
+                with self._state_lock:
+                    self._last_pushed_token = token_at_push
                 logger.info(
                     f"Push to remote completed ({len(history_data.get('entries', []))} entries)"
                 )
@@ -274,10 +309,25 @@ class SyncCoordinator:
             if added_to_local > 0:
                 logger.info(f"Added {added_to_local} entries from remote to local")
 
-            # Push merged data if there are local-only entries
+            # Push merged data only if (a) we actually have local-only hashes
+            # AND (b) something changed locally since the last successful push.
+            # The dirty check stops the every-minute ping-pong: max_history_size
+            # cutoffs and timestamp updates from save_entry leave one PC's
+            # local DB looking ~1 entry "ahead" of the remote payload even
+            # when nothing was copied, which used to fire push_to_remote on
+            # every pull and create a Git commit per minute on both PCs.
             if local_only_hashes:
-                logger.info(f"Found {len(local_only_hashes)} local-only entries, pushing to remote...")
-                self.push_to_remote()
+                if self.is_local_dirty():
+                    logger.info(
+                        f"Found {len(local_only_hashes)} local-only entries with "
+                        "pending local changes, pushing to remote..."
+                    )
+                    self.push_to_remote()
+                else:
+                    logger.debug(
+                        f"Found {len(local_only_hashes)} local-only entries but no "
+                        "pending local changes - skipping push (transient drift)"
+                    )
 
             # Refresh UI if viewer is open
             if history_viewer:

@@ -99,7 +99,11 @@ class TestSyncCoordinator:
     def test_pull_and_merge_uses_repository_as_local_source_of_truth(
         self, repository, clipboard_history, encryption_manager
     ):
-        # Local DB has one entry, but in-memory history starts empty.
+        # Local DB has one entry, but in-memory history starts empty. The
+        # dirty mark simulates the user actually having added that entry via
+        # the clipboard, so pull_and_merge should push it (the assertion this
+        # test is really about: pull reads from the DB, not from in-memory
+        # history, when both diverge).
         local_entry = ClipboardEntry(
             content="local_only",
             timestamp=datetime.now(),
@@ -117,9 +121,14 @@ class TestSyncCoordinator:
             repository=repository,
             config_getter=lambda: {"clipboard": {"max_history_size": 500}},
         )
+        coordinator.mark_local_dirty()
 
         coordinator.pull_and_merge()
         assert len(backend.uploaded_payloads) == 1
+        # And it pushed the DB entry, not the empty history.
+        pushed_payload, _ = backend.uploaded_payloads[0]
+        decrypted = encryption_manager.decrypt_json(pushed_payload)
+        assert any(e["content"] == "local_only" for e in decrypted["entries"])
 
 
 class TestSyncCoordinatorPushLock:
@@ -261,3 +270,151 @@ class TestSyncCoordinatorPushLock:
         ))
         coordinator.push_to_remote()
         assert len(backend.uploaded_payloads) == 1
+
+
+class TestSyncCoordinatorPullDrivenPush:
+    """pull_and_merge must NOT push every cycle when nothing changed locally."""
+
+    def test_pull_does_not_push_when_clean_even_with_local_only_drift(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        # Local has one entry; remote is empty (simulates the drift scenario
+        # where the entry is "local-only" relative to the remote payload).
+        local_entry = ClipboardEntry(
+            content="drift_entry",
+            timestamp=datetime.now(),
+            content_hash=ClipboardEntry.calculate_hash("drift_entry"),
+        )
+        repository.save_entry(local_entry)
+
+        encrypted_remote = encryption_manager.encrypt_json({"entries": []})
+        backend = DummySyncBackend(backup_payload=encrypted_remote)
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+        )
+
+        # Coordinator was just constructed - nothing was marked dirty - so
+        # pull_and_merge must NOT trigger a push despite local-only hashes.
+        assert coordinator.is_local_dirty() is False
+        coordinator.pull_and_merge()
+        assert backend.uploaded_payloads == [], (
+            "pull-driven push fired despite no local changes - this is the "
+            "every-minute-push regression"
+        )
+
+    def test_pull_does_push_when_dirty_and_local_only_present(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        local_entry = ClipboardEntry(
+            content="actually_new",
+            timestamp=datetime.now(),
+            content_hash=ClipboardEntry.calculate_hash("actually_new"),
+        )
+        repository.save_entry(local_entry)
+
+        encrypted_remote = encryption_manager.encrypt_json({"entries": []})
+        backend = DummySyncBackend(backup_payload=encrypted_remote)
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+        )
+
+        # Simulate a real clipboard add having marked the coordinator dirty.
+        coordinator.mark_local_dirty()
+        assert coordinator.is_local_dirty() is True
+
+        coordinator.pull_and_merge()
+        assert len(backend.uploaded_payloads) == 1
+
+    def test_successful_push_clears_dirty(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        repository.save_entry(ClipboardEntry(
+            content="x",
+            timestamp=datetime.now(),
+            content_hash=ClipboardEntry.calculate_hash("x"),
+        ))
+        backend = DummySyncBackend()
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+        )
+
+        coordinator.mark_local_dirty()
+        assert coordinator.is_local_dirty() is True
+
+        coordinator.push_to_remote()
+        assert coordinator.is_local_dirty() is False
+
+    def test_dirty_during_push_remains_dirty(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        """A clipboard add that races with an in-flight push must NOT be
+        silently swallowed - the dirty flag must stay set so a follow-up push
+        actually runs."""
+        repository.save_entry(ClipboardEntry(
+            content="x",
+            timestamp=datetime.now(),
+            content_hash=ClipboardEntry.calculate_hash("x"),
+        ))
+
+        race_token_check = {}
+
+        class RacingBackend(DummySyncBackend):
+            def upload_backup(self, data, filename=None):
+                # Simulate a clipboard add happening while we're uploading.
+                race_token_check["coordinator"].mark_local_dirty()
+                return super().upload_backup(data, filename)
+
+        backend = RacingBackend()
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+        )
+        race_token_check["coordinator"] = coordinator
+
+        coordinator.mark_local_dirty()
+        coordinator.push_to_remote()
+        assert coordinator.is_local_dirty() is True, (
+            "Race-during-push lost the new dirty mark - second push will be skipped"
+        )
+
+    def test_failed_push_keeps_dirty(
+        self, repository, clipboard_history, encryption_manager
+    ):
+        repository.save_entry(ClipboardEntry(
+            content="x",
+            timestamp=datetime.now(),
+            content_hash=ClipboardEntry.calculate_hash("x"),
+        ))
+
+        class FailingBackend(DummySyncBackend):
+            def upload_backup(self, data, filename=None):
+                self.uploaded_payloads.append((data, filename))
+                return False
+
+        backend = FailingBackend()
+        coordinator = SyncCoordinator(
+            sync_backend=backend,
+            encryption=encryption_manager,
+            clipboard_history=clipboard_history,
+            repository=repository,
+            config_getter=lambda: {},
+        )
+
+        coordinator.mark_local_dirty()
+        coordinator.push_to_remote()
+        assert coordinator.is_local_dirty() is True
