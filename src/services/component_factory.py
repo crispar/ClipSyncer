@@ -41,14 +41,38 @@ class ComponentFactory:
         repository = ClipboardRepository(database_manager, encryption_manager)
         return database_manager, repository
 
-    def create_clipboard(self) -> tuple[ClipboardMonitor, ClipboardHistory]:
-        """Create clipboard monitoring components"""
+    def create_clipboard(self):
+        """Create clipboard monitoring components.
+
+        Prefers the event-driven :class:`QtClipboardMonitor` when a
+        ``QApplication`` is available so we avoid waking on a 2Hz polling
+        loop; falls back to :class:`ClipboardMonitor` otherwise (e.g. in
+        unit tests with no Qt event loop or on exotic setups where Qt's
+        clipboard integration misbehaves).
+        """
         logger.info("Initializing clipboard monitoring...")
         check_interval = self.config.get('clipboard.check_interval', 500)
         max_history = self.config.get('clipboard.max_history_size', 500)
-        monitor = ClipboardMonitor(check_interval)
+
+        monitor = self._try_create_qt_monitor()
+        if monitor is None:
+            monitor = ClipboardMonitor(check_interval)
+
         history = ClipboardHistory(max_history)
         return monitor, history
+
+    @staticmethod
+    def _try_create_qt_monitor():
+        """Return a QtClipboardMonitor if Qt is running, else None."""
+        try:
+            from PyQt6.QtWidgets import QApplication
+            from src.core.clipboard.qt_monitor import QtClipboardMonitor
+            if not isinstance(QApplication.instance(), QApplication):
+                return None
+            return QtClipboardMonitor()
+        except Exception as e:
+            logger.debug(f"Qt clipboard monitor unavailable, using polling: {e}")
+            return None
 
     def create_github_sync(self, github_settings: dict) -> Optional[GitHubSyncService]:
         """Create GitHub sync service from settings"""
